@@ -1,13 +1,18 @@
 // pages/index.tsx
-export default function Home() {
-  return null;
-}
+import Link from "next/link";
 
-export async function getServerSideProps() {
-  return {
-    redirect: {
-      destination: "https://YOUR-FRAMER-SITE.framer.website/", // <- your Framer URL
-      permanent: false,
-    },
-  };
+export default function Home() {
+  return (
+    <main style={{ padding: "2rem", fontFamily: "sans-serif" }}>
+      <h1>Vesture OS – MVP</h1>
+      <p>
+        An AI-powered outfit curation tool. Enter your vibe or occasion and we’ll suggest looks.
+      </p>
+      <Link href="/results">
+        <button style={{ marginTop: "1rem", padding: "0.5rem 1rem" }}>
+          Try It
+        </button>
+      </Link>
+    </main>
+  );
 }
