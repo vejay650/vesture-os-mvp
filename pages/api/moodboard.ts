@@ -1,199 +1,95 @@
 // pages/api/moodboard.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import OpenAI from "openai";
 
-/**
- * This endpoint:
- * 1) asks GPT to structure an outfit concept with brand references
- * 2) turns that into an SDXL prompt
- * 3) calls Replicate to generate 1–2 images
- * 4) returns { imageUrls, outfit, references }
- */
+type ImageResult = {
+  imageUrl: string;
+  sourceUrl: string;
+  title: string;
+  thumbnailUrl?: string;
+  provider?: string;
+};
 
-type Body = {
+function buildQuery({
+  event,
+  mood,
+  style,
+  gender,
+  brands,
+  sites,
+}: {
   event?: string;
   mood?: string;
   style?: string;
   gender?: string;
-  count?: number; // how many images to generate
-};
-
-const SMALL_LABELS_HINT = `
-Smaller/indie labels to favor in suggestions:
-- Kapital (Japan), Story Mfg, Our Legacy, Wales Bonner, A-Cold-Wall, Needles, Martine Rose, Kiko Kostadinov, JJJJound (collabs), Aimé Leon Dore.
-`;
-
-const BIG_BRANDS_HINT = `
-Also include some well-known brands/retailers:
-- Prada, CDG (Comme des Garçons), Acne Studios, COS, Farfetch catalog, Nike/Asics sneakers.
-`;
-
-const DEFAULT_NEGATIVE = "low quality, deformed, extra fingers, text, watermark, logo, collage of tiny tiles";
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST")
-    return res.status(405).json({ error: "Method not allowed" });
-
-  try {
-    const {
-      event = "",
-      mood = "",
-      style = "",
-      gender = "",
-      count = 1,
-    } = (req.body || {}) as Body;
-
-    const openaiKey = process.env.OPENAI_API_KEY;
-    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-    const replicateKey = process.env.REPLICATE_API_TOKEN;
-
-    if (!openaiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-    if (!replicateKey) return res.status(500).json({ error: "Missing REPLICATE_API_TOKEN" });
-
-    // 1) Ask GPT for a structured outfit + brand references
-    const client = new OpenAI({ apiKey: openaiKey });
-
-    const prompt = `
-You are a concise fashion stylist.
-
-Create ONE outfit concept (title + 4 items) for:
-- Event: ${event || "unspecified"}
-- Mood: ${mood || "unspecified"}
-- Style: ${style || "any"}
-- Gender: ${gender || "any"}
-
-Prioritize smaller/indie labels but mix in some known brands. Include 2–4 clickable reference links (Instagram brand pages or retailer listings like Farfetch).
-
-Return ONLY JSON in this exact shape:
-{
-  "outfit_name": "string",
-  "items": [
-    { "piece": "string", "brand_examples": ["string", "string"] },
-    { "piece": "string", "brand_examples": ["string"] },
-    { "piece": "string", "brand_examples": ["string"] },
-    { "piece": "string", "brand_examples": ["string"] }
-  ],
-  "references": ["https://...", "https://..."]
+  brands?: string[];
+  sites: string[];
+}) {
+  const parts = [event, mood, style, gender].filter(Boolean);
+  let q = (parts.join(" ") || "outfit").trim();
+  if (brands && brands.length) q += " " + brands.join(" ");
+  const siteFilter = sites.map((s) => `site:${s}`).join(" OR ");
+  return `${q} outfit ${siteFilter}`;
 }
 
-${SMALL_LABELS_HINT}
-${BIG_BRANDS_HINT}
-    `.trim();
+async function searchGoogleImages(query: string, count = 12): Promise<ImageResult[]> {
+  const key = process.env.GOOGLE_CSE_KEY!;
+  const cx = process.env.GOOGLE_CSE_ID!;
+  if (!key || !cx) throw new Error("Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID");
 
-    const c = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: "Respond ONLY with valid JSON. No prose." },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.7,
+  const url = new URL("https://www.googleapis.com/customsearch/v1");
+  url.searchParams.set("q", query);
+  url.searchParams.set("searchType", "image");
+  url.searchParams.set("num", String(Math.min(count, 10))); // Google caps at 10 per request
+  url.searchParams.set("key", key);
+  url.searchParams.set("cx", cx);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Google CSE error: ${res.status} ${t}`);
+  }
+  const data = await res.json();
+
+  const results: ImageResult[] = (data.items || []).map((it: any) => ({
+    imageUrl: it.link,
+    sourceUrl: it.image?.contextLink || it.link,
+    title: it.title,
+    thumbnailUrl: it.image?.thumbnailLink,
+    provider: new URL(it.link).hostname.replace(/^www\./, ""),
+  }));
+  return results;
+}
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  try {
+    const { event, mood, style, gender, brands, count = 12 } = req.body || {};
+    if (!event && !style && !mood) {
+      return res.status(400).json({ error: "Provide at least one of: event, mood, style" });
+    }
+
+    const sites =
+      (process.env.RETAILER_SITES || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+    if (sites.length === 0) {
+      return res.status(500).json({ error: "No retailer sites configured (RETAILER_SITES)" });
+    }
+
+    const query = buildQuery({ event, mood, style, gender, brands, sites });
+    const images = await searchGoogleImages(query, count);
+
+    // Dedup by image URL
+    const seen = new Set<string>();
+    const unique = images.filter((x) => {
+      if (!x.imageUrl || seen.has(x.imageUrl)) return false;
+      seen.add(x.imageUrl);
+      return true;
     });
 
-    const content = c.choices?.[0]?.message?.content?.trim() || "{}";
-    let outfitJson: any;
-    try {
-      outfitJson = JSON.parse(content);
-    } catch {
-      outfitJson = { outfit_name: "Curated Look", items: [], references: [] };
-    }
-
-    // 2) Build an SDXL prompt from the outfit
-    const itemsLine =
-      Array.isArray(outfitJson?.items) && outfitJson.items.length
-        ? outfitJson.items
-            .map(
-              (it: any) =>
-                `${it.piece}${
-                  it.brand_examples?.length
-                    ? ` (brands: ${it.brand_examples.join(", ")})`
-                    : ""
-                }`
-            )
-            .join(", ")
-        : `${style} ${mood} outfit`;
-
-    const sdxlPrompt = `
-Editorial fashion lookbook photo, full body, ${gender || "unisex"} model.
-${itemsLine}.
-Refined styling, natural pose, studio lighting, 50mm lens feel, high detail, draped fabrics, realistic textures.
-Trending street-lux aesthetic, clean background.
-    `.trim();
-
-    // 3) Call Replicate SDXL
-    // Model reference: stability-ai/sdxl or replicate/sdxl - versions can change; this is a common default.
-    const version = process.env.REPLICATE_SDXL_VERSION || "stability-ai/sdxl"; // you can pin a specific version string later
-
-    const genCount = Math.max(1, Math.min(2, Number(count) || 1)); // 1–2 images for MVP
-
-    const replicateRes = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${replicateKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        // Note: You can swap to a specific SDXL version if you prefer.
-        // Check your Replicate dashboard for the exact "version" for SDXL you want.
-        version,
-        input: {
-          prompt: sdxlPrompt,
-          negative_prompt: DEFAULT_NEGATIVE,
-          num_outputs: genCount,
-          // Optional tuning knobs:
-          cfg_scale: 6.5,
-          aspect_ratio: "1:1",
-          output_format: "png",
-        },
-      }),
-    });
-
-    if (!replicateRes.ok) {
-      const t = await replicateRes.text();
-      return res.status(500).json({ error: "Replicate error", details: t });
-    }
-
-    const replicateData = await replicateRes.json();
-
-    // Replicate returns a prediction object; we may need to poll the status URL until "succeeded".
-    // For MVP, do a simple poll loop (max ~20s).
-    let statusData = replicateData;
-    const statusUrl = replicateData?.urls?.get as string | undefined;
-    const started = Date.now();
-
-    while (
-      statusUrl &&
-      statusData?.status &&
-      ["starting", "processing", "pending"].includes(statusData.status) &&
-      Date.now() - started < 20000
-    ) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const poll = await fetch(statusUrl, {
-        headers: { Authorization: `Token ${replicateKey}` },
-      });
-      statusData = await poll.json();
-    }
-
-    if (statusData?.status !== "succeeded") {
-      return res.status(200).json({
-        imageUrls: [],
-        outfit: outfitJson,
-        references: outfitJson?.references || [],
-        note: "Image generation still running or failed; try again.",
-        status: statusData?.status || "unknown",
-      });
-    }
-
-    const imageUrls: string[] = statusData?.output || [];
-
-    return res.status(200).json({
-      imageUrls,
-      outfit: outfitJson,
-      references: outfitJson?.references || [],
-      prompt: sdxlPrompt,
-      source: "replicate-sdxl",
-    });
+    res.status(200).json({ query, images: unique, source: "google-cse" });
   } catch (err: any) {
-    console.error(err);
-    return res.status(500).json({ error: err?.message || "Failed to generate moodboard." });
+    res.status(500).json({ error: err?.message || "Unexpected error" });
   }
 }
