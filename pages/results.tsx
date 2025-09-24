@@ -184,6 +184,7 @@ export default function Results() {
                   src={url}
                   alt={`moodboard ${i + 1}`}
                   style={{ width: "100%", borderRadius: 10 }}
+                  referrerPolicy="no-referrer" // 👈 important fix
                 />
               ))}
             </div>
