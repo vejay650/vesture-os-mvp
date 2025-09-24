@@ -52,14 +52,28 @@ export default function Results() {
     setStyle(st);
     setGender(g);
 
-    const hasParams = !!(e || mo || st || g);
-    if (m === "moodboard" && hasParams) {
-      setLoading(true);
-      fetch("/api/moodboard", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event: e, mood: mo, style: st, gender: g, count: 12 }),
-      })
+   const hasParams = !!(e || mo || st || g);
+if (m === "moodboard") {
+  const payload = hasParams
+    ? { event: e, mood: mo, style: st, gender: g, count: 12 }
+    : { event: "lookbook", mood: "minimal", style: "streetwear", gender: "unisex", count: 12 };
+
+  setLoading(true);
+  fetch("/api/moodboard", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+    .then((r) => r.json())
+    .then((data) => {
+      const imgs = (data?.images || []).map((it: any) => it.imageUrl);
+      setImageUrls(imgs);
+      if (data?.error) setError(data.error);
+    })
+    .catch(() => setError("Failed to reach server."))
+    .finally(() => setLoading(false));
+}
+
         .then((r) => r.json())
         .then((data) => {
           const imgs = (data?.images || []).map((it: any) => it.imageUrl);
