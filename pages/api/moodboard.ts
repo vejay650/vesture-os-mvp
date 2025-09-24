@@ -9,6 +9,10 @@ type ImageResult = {
   provider?: string;
 };
 
+function sanitize(text?: string) {
+  return (text || "").toString().trim();
+}
+
 function buildQuery({
   event,
   mood,
@@ -22,63 +26,102 @@ function buildQuery({
   style?: string;
   gender?: string;
   brands?: string[];
-  sites: string[];
+  sites?: string[];
 }) {
-  const parts = [event, mood, style, gender].filter(Boolean);
+  const parts = [event, mood, style, gender].map(sanitize).filter(Boolean);
   let q = (parts.join(" ") || "outfit").trim();
-  if (brands && brands.length) q += " " + brands.join(" ");
-  const siteFilter = sites.map((s) => `site:${s}`).join(" OR ");
-  return `${q} outfit ${siteFilter}`;
+  if (brands && brands.length) q += " " + brands.map(sanitize).join(" ");
+
+  // Only add site filters if we actually have sites configured.
+  if (sites && sites.length > 0) {
+    const siteFilter = sites.map((s) => `site:${s}`).join(" OR ");
+    q = `${q} outfit ${siteFilter}`;
+  } else {
+    q = `${q} outfit`;
+  }
+  return q;
 }
 
-async function searchGoogleImages(query: string, count = 12): Promise<ImageResult[]> {
-  const key = process.env.GOOGLE_CSE_KEY!;
-  const cx = process.env.GOOGLE_CSE_ID!;
-  if (!key || !cx) throw new Error("Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID");
+async function searchGoogleImages(query: string, count = 12, start = 1): Promise<ImageResult[]> {
+  const key = process.env.GOOGLE_CSE_KEY;
+  const cx = process.env.GOOGLE_CSE_ID;
+  if (!key || !cx) {
+    throw new Error(
+      "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID. Add them in Vercel → Settings → Environment Variables."
+    );
+  }
+
+  // Google caps num at 10 per request; start is 1-based index
+  const num = Math.max(1, Math.min(10, Number(count) || 10));
+  const startIdx = Math.max(1, Math.min(91, Number(start) || 1)); // CSE allows up to ~100 results
 
   const url = new URL("https://www.googleapis.com/customsearch/v1");
   url.searchParams.set("q", query);
   url.searchParams.set("searchType", "image");
-  url.searchParams.set("num", String(Math.min(count, 10))); // Google caps at 10 per request
+  url.searchParams.set("num", String(num));
+  url.searchParams.set("start", String(startIdx));
   url.searchParams.set("key", key);
   url.searchParams.set("cx", cx);
+  // (SafeSearch + site restrictions are primarily controlled in your CSE; we keep this simple.)
 
   const res = await fetch(url.toString());
   if (!res.ok) {
     const t = await res.text();
-    throw new Error(`Google CSE error: ${res.status} ${t}`);
+    throw new Error(`Google CSE error ${res.status}: ${t}`);
   }
   const data = await res.json();
 
-  const results: ImageResult[] = (data.items || []).map((it: any) => ({
+  const items: any[] = Array.isArray(data?.items) ? data.items : [];
+  const results: ImageResult[] = items.map((it) => ({
     imageUrl: it.link,
     sourceUrl: it.image?.contextLink || it.link,
     title: it.title,
     thumbnailUrl: it.image?.thumbnailLink,
-    provider: new URL(it.link).hostname.replace(/^www\./, ""),
+    provider: (() => {
+      try {
+        return new URL(it.link).hostname.replace(/^www\./, "");
+      } catch {
+        return undefined;
+      }
+    })(),
   }));
+
   return results;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  try {
-    const { event, mood, style, gender, brands, count = 12 } = req.body || {};
-    if (!event && !style && !mood) {
-      return res.status(400).json({ error: "Provide at least one of: event, mood, style" });
-    }
+  // Accept POST (recommended) and GET (for quick manual tests with query string)
+  const isPost = req.method === "POST";
+  if (!isPost && req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
+  try {
+    // Read inputs from body (POST) or query (GET) for convenience
+    const src: any = isPost ? req.body || {} : req.query || {};
+    const event = sanitize(src.event);
+    const mood = sanitize(src.mood);
+    const style = sanitize(src.style);
+    const gender = sanitize(src.gender);
+    const brands = Array.isArray(src.brands)
+      ? src.brands.map(sanitize)
+      : typeof src.brands === "string" && src.brands.length
+      ? src.brands.split(",").map(sanitize)
+      : undefined;
+
+    const count = Number(src.count) || 12;
+    const start = Number(src.start) || 1;
+
+    // If you didn't pass any of event/mood/style, we still proceed (fallback query)
     const sites =
       (process.env.RETAILER_SITES || "")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
 
-    if (sites.length === 0) {
-      return res.status(500).json({ error: "No retailer sites configured (RETAILER_SITES)" });
-    }
+    const query = buildQuery({ event, mood, style, gender, brands, sites: sites.length ? sites : undefined });
 
-    const query = buildQuery({ event, mood, style, gender, brands, sites });
-    const images = await searchGoogleImages(query, count);
+    const images = await searchGoogleImages(query, count, start);
 
     // Dedup by image URL
     const seen = new Set<string>();
@@ -88,8 +131,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return true;
     });
 
-    res.status(200).json({ query, images: unique, source: "google-cse" });
+    return res.status(200).json({
+      query,
+      images: unique,
+      source: "google-cse",
+      page: { start, count: Math.min(count, 10) },
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || "Unexpected error" });
+    return res.status(500).json({
+      error: err?.message || "Unexpected error",
+    });
   }
 }
