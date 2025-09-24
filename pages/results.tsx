@@ -1,157 +1,193 @@
-import { useRouter } from "next/router";
 import { useEffect, useState } from "react";
 
 type Mode = "outfits" | "moodboard";
 
 export default function Results() {
-  const router = useRouter();
   const [mode, setMode] = useState<Mode>("outfits");
+
+  // One-box query (used for both modes)
+  const [query, setQuery] = useState("");
+
+  // Parsed fields for outfits
   const [event, setEvent] = useState("");
   const [mood, setMood] = useState("");
   const [style, setStyle] = useState("");
   const [gender, setGender] = useState("");
+
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
-  const [refs, setRefs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Handle manual form submit (for outfits)
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    setSuggestions([]);
-    try {
-      const res = await fetch("/api/curate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event, mood, style, gender }),
-      });
-      const data = await res.json();
-      if (data?.error) setError(data.error);
-      else setSuggestions(data.suggestions || []);
-    } catch {
-      setError("Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Auto-run for moodboard if query params exist (or use defaults)
+  // On first load: read URL (?mode=..., or old params, or ?q=)
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     const m = (p.get("mode") as Mode) || "outfits";
+    setMode(m);
+
+    const qParam = p.get("q") || "";
+    if (qParam) {
+      setQuery(qParam);
+      if (m === "moodboard") runMoodboard(qParam);
+      if (m === "outfits") runOutfits(qParam);
+      return;
+    }
+
+    // Backward compatibility with old params
     const e = p.get("event") || "";
     const mo = p.get("mood") || "";
     const st = p.get("style") || "";
     const g = p.get("gender") || "";
-    setMode(m);
-    setEvent(e);
-    setMood(mo);
-    setStyle(st);
-    setGender(g);
+    const seed = [e, mo, st, g].filter(Boolean).join(", ");
+    setQuery(seed);
 
-    const hasParams = !!(e || mo || st || g);
-    if (m === "moodboard") {
-      const payload = hasParams
-        ? { event: e, mood: mo, style: st, gender: g, count: 12 }
-        : { event: "lookbook", mood: "minimal", style: "streetwear", gender: "unisex", count: 12 };
+    if (m === "moodboard" && seed) runMoodboard(seed);
+    if (m === "moodboard" && !seed) runMoodboard("lookbook, minimal, streetwear, unisex");
+  }, []);
 
-      setLoading(true);
-      fetch("/api/moodboard", {
+  async function runOutfits(q: string) {
+    setLoading(true);
+    setError("");
+    setSuggestions([]);
+
+    try {
+      // 1) Parse the natural text into fields
+      const parseRes = await fetch("/api/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          const imgs = (data?.images || []).map((it: any) => it.imageUrl);
-          setImageUrls(imgs);
-          setRefs((data?.images || []).map((it: any) => it.sourceUrl).slice(0, 6));
-          if (data?.error) setError(data.error);
-        })
-        .catch(() => setError("Failed to reach server."))
-        .finally(() => setLoading(false));
+        body: JSON.stringify({ q }),
+      });
+      const parsed = await parseRes.json();
+      if (parsed?.error) throw new Error(parsed.error);
+
+      setEvent(parsed.event || "");
+      setMood(parsed.mood || "");
+      setStyle(parsed.style || "");
+      setGender(parsed.gender || "unisex");
+
+      // 2) Call curate with normalized fields
+      const res = await fetch("/api/curate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: parsed.event,
+          mood: parsed.mood,
+          style: parsed.style,
+          gender: parsed.gender,
+        }),
+      });
+      const data = await res.json();
+      if (data?.error) setError(data.error);
+      else setSuggestions(data.suggestions || []);
+    } catch (err: any) {
+      setError(err?.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }
+
+  async function runMoodboard(q: string) {
+    setLoading(true);
+    setError("");
+    setImageUrls([]);
+    try {
+      const res = await fetch("/api/moodboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ q, count: 12 }),
+      });
+      const data = await res.json();
+      if (data?.error) setError(data.error);
+      const imgs = (data?.images || []).map((it: any) => it.imageUrl);
+      setImageUrls(imgs);
+    } catch {
+      setError("Failed to reach server.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    if (!query.trim()) return;
+    if (mode === "outfits") return runOutfits(query);
+    return runMoodboard(query);
+  }
 
   return (
     <main
       style={{
         padding: "2rem",
         fontFamily: "sans-serif",
-        maxWidth: 720,
+        maxWidth: 920,
         margin: "0 auto",
       }}
     >
       <h1 style={{ marginBottom: "1rem" }}>Get Styled ✨</h1>
 
-      {/* FORM + Outfit results */}
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button
+          onClick={() => setMode("outfits")}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid #ddd",
+            background: mode === "outfits" ? "#111" : "#fff",
+            color: mode === "outfits" ? "#fff" : "#111",
+            cursor: "pointer",
+          }}
+        >
+          Outfits
+        </button>
+        <button
+          onClick={() => setMode("moodboard")}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid #ddd",
+            background: mode === "moodboard" ? "#111" : "#fff",
+            color: mode === "moodboard" ? "#fff" : "#111",
+            cursor: "pointer",
+          }}
+        >
+          Moodboard
+        </button>
+      </div>
+
+      {/* One search bar */}
+      <form onSubmit={handleSearch} style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="e.g. dinner, minimal, japanese workwear, unisex"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid #ddd" }}
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          style={{
+            padding: "12px 16px",
+            borderRadius: 8,
+            background: "#111",
+            color: "#fff",
+            border: "none",
+            cursor: "pointer",
+            minWidth: 120,
+          }}
+        >
+          {loading ? "Searching…" : "Search"}
+        </button>
+      </form>
+
+      {error && <p style={{ color: "red", marginBottom: 16 }}>{error}</p>}
+
+      {/* Outfits (text) */}
       {mode === "outfits" && (
         <>
-          <p style={{ marginBottom: "2rem" }}>
-            Enter your event, mood, and style preferences — our AI will curate 3 outfit ideas for you.
-          </p>
-
-          <form
-            onSubmit={handleSubmit}
-            style={{ display: "grid", gap: "0.75rem", gridTemplateColumns: "1fr 1fr" }}
-          >
-            <input
-              type="text"
-              placeholder="Event (e.g. wedding, dinner)"
-              value={event}
-              onChange={(e) => setEvent(e.target.value)}
-              required
-              style={{ padding: "10px" }}
-            />
-            <input
-              type="text"
-              placeholder="Mood (e.g. elegant, casual)"
-              value={mood}
-              onChange={(e) => setMood(e.target.value)}
-              required
-              style={{ padding: "10px" }}
-            />
-            <input
-              type="text"
-              placeholder="Style (e.g. streetwear, minimal)"
-              value={style}
-              onChange={(e) => setStyle(e.target.value)}
-              style={{ padding: "10px" }}
-            />
-            <select
-              value={gender}
-              onChange={(e) => setGender(e.target.value)}
-              style={{ padding: "10px" }}
-            >
-              <option value="">Gender (optional)</option>
-              <option value="men's">Men’s</option>
-              <option value="women's">Women’s</option>
-              <option value="unisex">Unisex</option>
-            </select>
-
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                padding: "12px 16px",
-                background: "#111",
-                color: "#fff",
-                border: "none",
-                cursor: "pointer",
-                gridColumn: "1 / span 2",
-              }}
-            >
-              {loading ? "Styling..." : "Get 3 Styled Looks"}
-            </button>
-          </form>
-
-          {error && <p style={{ color: "red", marginTop: "1rem" }}>{error}</p>}
-
           {suggestions.length > 0 && (
-            <section style={{ marginTop: "2rem" }}>
+            <section style={{ marginTop: "1rem" }}>
               <h3>Suggested Outfits</h3>
               <ol style={{ paddingLeft: "1.25rem", lineHeight: 1.6 }}>
                 {suggestions.map((s, i) => (
@@ -163,13 +199,10 @@ export default function Results() {
         </>
       )}
 
-      {/* Moodboard results */}
+      {/* Moodboard (images) */}
       {mode === "moodboard" && (
-        <section style={{ marginTop: "2rem" }}>
-          <h3>Outfit Moodboard</h3>
-          {loading && <p>Loading…</p>}
-          {!loading && imageUrls.length === 0 && !error && <p>No images yet.</p>}
-          {error && <p style={{ color: "red" }}>{error}</p>}
+        <section style={{ marginTop: "1rem" }}>
+          {imageUrls.length === 0 && !loading && !error && <p>No images yet — try a broader phrase.</p>}
           {imageUrls.length > 0 && (
             <div
               style={{
@@ -184,7 +217,7 @@ export default function Results() {
                   src={url}
                   alt={`moodboard ${i + 1}`}
                   style={{ width: "100%", borderRadius: 10 }}
-                  referrerPolicy="no-referrer" // 👈 important fix
+                  referrerPolicy="no-referrer"
                 />
               ))}
             </div>
