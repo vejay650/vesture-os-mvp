@@ -1,163 +1,190 @@
-// pages/results.tsx
+import { useRouter } from "next/router";
 import { useEffect, useState } from "react";
 
-type ImageResult = {
-  imageUrl: string;
-  sourceUrl: string;
-  title: string;
-  thumbnailUrl?: string;
-  provider?: string;
-};
+type Mode = "outfits" | "moodboard";
 
 export default function Results() {
+  const router = useRouter();
+
+  // Search UI
   const [q, setQ] = useState("");
+  const [mode, setMode] = useState<Mode>("moodboard");
+
+  // Optional structured fields (still supported)
+  const [event, setEvent] = useState("");
+  const [mood, setMood] = useState("");
+  const [style, setStyle] = useState("");
+  const [gender, setGender] = useState("");
+
+  // Results
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [imageUrls, setImageUrls] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [images, setImages] = useState<ImageResult[]>([]);
 
-  // Read ?q= from URL and auto-run
+  // Search submit (text bar)
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const params = new URLSearchParams();
+    params.set("mode", "moodboard");
+    if (q.trim()) params.set("q", q.trim());
+    router.replace(`/results?${params.toString()}`);
+  };
+
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
-    const q0 = (p.get("q") || "").trim();
-    setQ(q0);
-    if (q0) run(q0);
-  }, []);
+    const m = (p.get("mode") as Mode) || "moodboard";
+    setMode(m);
 
-  async function run(input: string) {
-    setError("");
-    setImages([]);
-    setLoading(true);
-    try {
-      // 1) Parse free text to intent
-      const parsedRes = await fetch("/api/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q: input }),
-      });
-      const { parsed, error: perr } = await parsedRes.json();
-      if (perr) throw new Error(perr);
+    // read both the new free-text q and legacy structured params
+    const _q = p.get("q") || "";
+    const e = p.get("event") || "";
+    const mo = p.get("mood") || "";
+    const st = p.get("style") || "";
+    const g = p.get("gender") || "";
 
-      // 2) Query moodboard with intent (base + per-garment)
-      const moodRes = await fetch("/api/moodboard", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event: parsed?.event,
-          mood: parsed?.mood,
-          style: parsed?.style,
-          gender: parsed?.gender,
-          items: parsed?.items || [],
-          target: 24,
-        }),
-      });
+    setQ(_q);
+    setEvent(e);
+    setMood(mo);
+    setStyle(st);
+    setGender(g);
 
-      const data = await moodRes.json();
-      if (data?.error) throw new Error(data.error);
-      setImages(data.images || []);
-    } catch (e: any) {
-      setError(e?.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
+    if (m !== "moodboard") return;
+
+    const hasStructured = !!(e || mo || st || g);
+    const payload: any =
+      _q.trim()
+        ? { q: _q.trim(), count: 12 }
+        : hasStructured
+        ? { event: e, mood: mo, style: st, gender: g, count: 12 }
+        : null;
+
+    if (!payload) {
+      setImageUrls([]);
+      setError("Provide q or one of: event, mood, style");
+      return;
     }
-  }
 
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const newQ = q.trim();
-    if (!newQ) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set("q", newQ);
-    window.history.replaceState(null, "", url.toString());
-    run(newQ);
-  }
+    setLoading(true);
+    setError("");
+    setImageUrls([]);
+
+    fetch("/api/moodboard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.error) {
+          setError(String(data.error));
+          setImageUrls([]);
+          return;
+        }
+        const imgs = (data?.images || [])
+          .map((it: any) => it.imageUrl)
+          .filter(Boolean);
+
+        // client-side dedupe
+        const seen = new Set<string>();
+        const unique = imgs.filter((u: string) => {
+          if (seen.has(u)) return false;
+          seen.add(u);
+          return true;
+        });
+
+        setImageUrls(unique);
+      })
+      .catch(() => setError("Failed to reach server."))
+      .finally(() => setLoading(false));
+  }, [router.asPath]);
 
   return (
-    <main style={{ padding: "2rem", fontFamily: "Inter, system-ui, sans-serif", maxWidth: 1200, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 36, margin: "0 0 1rem" }}>
-        Get Styled <span style={{ fontSize: 28 }}>✨</span>
+    <main
+      style={{
+        padding: "2rem",
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        maxWidth: 1100,
+        margin: "0 auto",
+      }}
+    >
+      <h1 style={{ marginBottom: "1rem" }}>
+        Get Styled <span style={{ fontSize: "1.2rem" }}>✨</span>
       </h1>
 
-      <form onSubmit={onSubmit} style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+      {/* One search bar */}
+      <form onSubmit={handleSearch} style={{ display: "flex", gap: 12 }}>
         <input
+          type="text"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder='Try: "oversized japanese streetwear summer pants"'
+          placeholder='Try: "oversized japanese streetwear"'
           style={{
             flex: 1,
-            padding: "12px 14px",
-            border: "1px solid #ddd",
+            padding: "12px 16px",
             borderRadius: 8,
-            fontSize: 16,
+            border: "1px solid #ccc",
+            outline: "none",
           }}
         />
         <button
           type="submit"
-          disabled={loading}
           style={{
-            padding: "12px 18px",
+            padding: "12px 16px",
             borderRadius: 8,
-            border: "0",
+            border: "none",
             background: "#111",
             color: "#fff",
             cursor: "pointer",
-            fontWeight: 600,
+            minWidth: 100,
           }}
         >
-          {loading ? "Searching…" : "Search"}
+          Search
         </button>
       </form>
 
-      <p style={{ color: "#666", marginBottom: 24 }}>
-        Tip: keep it short — e.g. <em>“dinner minimal unisex”</em> or <em>“black denim workwear”</em>
+      <p style={{ marginTop: 8, color: "#666" }}>
+        Tip: keep it short — e.g. <em>“dinner minimal unisex”</em> or{" "}
+        <em>“black denim workwear”</em>
       </p>
 
-      <h3 style={{ margin: "18px 0" }}>Outfit Moodboard</h3>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
-      {!error && loading && <p>Loading…</p>}
-      {!error && !loading && images.length === 0 && <p>No images yet.</p>}
-
-      {images.length > 0 && (
-        <div
-          style={{
-            display: "grid",
-            gap: 16,
-            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-            alignItems: "start",
-          }}
-        >
-          {images.map((img, i) => (
-            <a
-              key={i}
-              href={img.sourceUrl || img.imageUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                display: "block",
-                borderRadius: 12,
-                overflow: "hidden",
-                border: "1px solid #eee",
-                background: "#fafafa",
-              }}
-              title={img.title}
-            >
+      {/* Moodboard */}
+      <section style={{ marginTop: "1.25rem" }}>
+        <h3>Outfit Moodboard</h3>
+        {loading && <p>Loading…</p>}
+        {!loading && error && (
+          <p style={{ color: "crimson", marginTop: 8 }}>{error}</p>
+        )}
+        {!loading && !error && imageUrls.length === 0 && (
+          <p style={{ marginTop: 8 }}>No images yet.</p>
+        )}
+        {imageUrls.length > 0 && (
+          <div
+            style={{
+              marginTop: 12,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+              gap: 16,
+            }}
+          >
+            {imageUrls.map((url, i) => (
               <img
-                src={img.imageUrl}
-                alt={img.title || `look ${i + 1}`}
+                key={`${url}-${i}`}
+                src={url}
+                alt={`moodboard ${i + 1}`}
                 loading="lazy"
                 style={{
                   width: "100%",
-                  height: 260,
-                  objectFit: "cover",     // prevents overflow of huge images
-                  display: "block",
+                  aspectRatio: "1/1",
+                  objectFit: "cover",
+                  borderRadius: 12,
+                  background: "#f4f4f4",
                 }}
               />
-              <div style={{ padding: "8px 10px", fontSize: 12, color: "#666" }}>
-                {img.provider || new URL(img.sourceUrl || img.imageUrl).hostname.replace(/^www\./, "")}
-              </div>
-            </a>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </section>
     </main>
   );
 }
