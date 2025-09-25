@@ -1,105 +1,53 @@
 import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 
-type Mode = "outfits" | "moodboard";
+type ImageItem = {
+  imageUrl: string;
+  sourceUrl?: string;
+  title?: string;
+  thumbnailUrl?: string;
+  provider?: string;
+};
 
 export default function Results() {
-  const [mode, setMode] = useState<Mode>("outfits");
+  const router = useRouter();
 
-  // One-box query (used for both modes)
-  const [query, setQuery] = useState("");
-
-  // Parsed fields for outfits
-  const [event, setEvent] = useState("");
-  const [mood, setMood] = useState("");
-  const [style, setStyle] = useState("");
-  const [gender, setGender] = useState("");
-
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  // one-field experience
+  const [q, setQ] = useState("");
+  const [images, setImages] = useState<ImageItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // On first load: read URL (?mode=..., or old params, or ?q=)
+  // On first load: show the search bar with no demo.
+  // If a q= is present in the URL, auto-run exactly that query once.
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const m = (p.get("mode") as Mode) || "outfits";
-    setMode(m);
+    const params = new URLSearchParams(window.location.search);
+    const urlQ = params.get("q") || "";
+    setQ(urlQ);
 
-    const qParam = p.get("q") || "";
-    if (qParam) {
-      setQuery(qParam);
-      if (m === "moodboard") runMoodboard(qParam);
-      if (m === "outfits") runOutfits(qParam);
-      return;
+    if (urlQ.trim()) {
+      runMoodboard(urlQ.trim());
     }
-
-    // Backward compatibility with old params
-    const e = p.get("event") || "";
-    const mo = p.get("mood") || "";
-    const st = p.get("style") || "";
-    const g = p.get("gender") || "";
-    const seed = [e, mo, st, g].filter(Boolean).join(", ");
-    setQuery(seed);
-
-    if (m === "moodboard" && seed) runMoodboard(seed);
-    if (m === "moodboard" && !seed) runMoodboard("lookbook, minimal, streetwear, unisex");
   }, []);
 
-  async function runOutfits(q: string) {
-    setLoading(true);
-    setError("");
-    setSuggestions([]);
-
+  async function runMoodboard(query: string) {
     try {
-      // 1) Parse the natural text into fields
-      const parseRes = await fetch("/api/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q }),
-      });
-      const parsed = await parseRes.json();
-      if (parsed?.error) throw new Error(parsed.error);
+      setLoading(true);
+      setError("");
+      setImages([]);
 
-      setEvent(parsed.event || "");
-      setMood(parsed.mood || "");
-      setStyle(parsed.style || "");
-      setGender(parsed.gender || "unisex");
-
-      // 2) Call curate with normalized fields
-      const res = await fetch("/api/curate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event: parsed.event,
-          mood: parsed.mood,
-          style: parsed.style,
-          gender: parsed.gender,
-        }),
-      });
-      const data = await res.json();
-      if (data?.error) setError(data.error);
-      else setSuggestions(data.suggestions || []);
-    } catch (err: any) {
-      setError(err?.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function runMoodboard(q: string) {
-    setLoading(true);
-    setError("");
-    setImageUrls([]);
-    try {
       const res = await fetch("/api/moodboard", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ q, count: 12 }),
+        body: JSON.stringify({ q: query, count: 12 }),
       });
+
       const data = await res.json();
-      if (data?.error) setError(data.error);
-      const imgs = (data?.images || []).map((it: any) => it.imageUrl);
-      setImageUrls(imgs);
+      if (!res.ok || data?.error) {
+        setError(data?.error || "Failed to fetch images.");
+        return;
+      }
+      setImages(data.images || []);
     } catch {
       setError("Failed to reach server.");
     } finally {
@@ -107,122 +55,125 @@ export default function Results() {
     }
   }
 
-  function handleSearch(e: React.FormEvent) {
+  // Submit handler for the single search box
+  const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
-    if (mode === "outfits") return runOutfits(query);
-    return runMoodboard(query);
-  }
+    const cleaned = q.trim();
+    if (!cleaned) return;
+    // update URL (shareable) but do not reload page
+    const next = new URL(window.location.href);
+    next.searchParams.set("mode", "moodboard");
+    next.searchParams.set("q", cleaned);
+    window.history.replaceState({}, "", next.toString());
+    runMoodboard(cleaned);
+  };
 
   return (
     <main
       style={{
         padding: "2rem",
-        fontFamily: "sans-serif",
-        maxWidth: 920,
+        fontFamily: "Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
+        maxWidth: 1000,
         margin: "0 auto",
       }}
     >
-      <h1 style={{ marginBottom: "1rem" }}>Get Styled ✨</h1>
+      <h1 style={{ marginBottom: "1rem", fontSize: 32, fontWeight: 700 }}>
+        Get Styled ✨
+      </h1>
 
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button
-          onClick={() => setMode("outfits")}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid #ddd",
-            background: mode === "outfits" ? "#111" : "#fff",
-            color: mode === "outfits" ? "#fff" : "#111",
-            cursor: "pointer",
-          }}
-        >
-          Outfits
-        </button>
-        <button
-          onClick={() => setMode("moodboard")}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid #ddd",
-            background: mode === "moodboard" ? "#111" : "#fff",
-            color: mode === "moodboard" ? "#fff" : "#111",
-            cursor: "pointer",
-          }}
-        >
-          Moodboard
-        </button>
-      </div>
-
-      {/* One search bar */}
-      <form onSubmit={handleSearch} style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      {/* Always show the search bar */}
+      <form onSubmit={onSubmit} style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <input
           type="text"
-          placeholder="e.g. dinner, minimal, japanese workwear, unisex"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid #ddd" }}
+          placeholder="Describe a vibe or idea (e.g. “streetwear minimal japanese workwear unisex”)"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{
+            flex: 1,
+            padding: "12px 14px",
+            border: "1px solid #ddd",
+            borderRadius: 10,
+            fontSize: 14,
+          }}
         />
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !q.trim()}
           style={{
             padding: "12px 16px",
-            borderRadius: 8,
             background: "#111",
             color: "#fff",
             border: "none",
-            cursor: "pointer",
-            minWidth: 120,
+            borderRadius: 10,
+            cursor: loading || !q.trim() ? "not-allowed" : "pointer",
+            fontWeight: 600,
           }}
         >
           {loading ? "Searching…" : "Search"}
         </button>
       </form>
 
-      {error && <p style={{ color: "red", marginBottom: 16 }}>{error}</p>}
+      <p style={{ color: "#666", marginBottom: 24 }}>
+        Tip: keep it short — e.g. <i>“dinner minimal unisex”</i> or <i>“black denim workwear”</i>
+      </p>
 
-      {/* Outfits (text) */}
-      {mode === "outfits" && (
-        <>
-          {suggestions.length > 0 && (
-            <section style={{ marginTop: "1rem" }}>
-              <h3>Suggested Outfits</h3>
-              <ol style={{ paddingLeft: "1.25rem", lineHeight: 1.6 }}>
-                {suggestions.map((s, i) => (
-                  <li key={i}>{s}</li>
-                ))}
-              </ol>
-            </section>
-          )}
-        </>
+      <h3 style={{ margin: "8px 0 16px", fontSize: 18 }}>Outfit Moodboard</h3>
+
+      {error && <p style={{ color: "red", marginTop: 8 }}>{error}</p>}
+      {!error && !loading && images.length === 0 && (
+        <p style={{ color: "#999" }}>Start with a search above — no demo images are auto-loaded.</p>
       )}
 
-      {/* Moodboard (images) */}
-      {mode === "moodboard" && (
-        <section style={{ marginTop: "1rem" }}>
-          {imageUrls.length === 0 && !loading && !error && <p>No images yet — try a broader phrase.</p>}
-          {imageUrls.length > 0 && (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-                gap: 16,
-              }}
+      {loading && <p>Loading…</p>}
+
+      {images.length > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+            gap: 16,
+          }}
+        >
+          {images.map((it, i) => (
+            <a
+              key={i}
+              href={it.sourceUrl || it.imageUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ textDecoration: "none", color: "inherit" }}
             >
-              {imageUrls.map((url, i) => (
+              <div
+                style={{
+                  width: "100%",
+                  background: "#f6f6f6",
+                  borderRadius: 12,
+                  padding: 10,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  height: 320,
+                }}
+              >
                 <img
-                  key={i}
-                  src={url}
-                  alt={`moodboard ${i + 1}`}
-                  style={{ width: "100%", borderRadius: 10 }}
+                  src={it.imageUrl}
+                  alt={it.title || `moodboard ${i + 1}`}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain", // ensure no overflow
+                    borderRadius: 8,
+                  }}
                   referrerPolicy="no-referrer"
                 />
-              ))}
-            </div>
-          )}
-        </section>
+              </div>
+              {it.provider && (
+                <div style={{ marginTop: 6, fontSize: 12, color: "#777" }}>
+                  {it.provider}
+                </div>
+              )}
+            </a>
+          ))}
+        </div>
       )}
     </main>
   );
