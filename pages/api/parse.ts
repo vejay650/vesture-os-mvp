@@ -2,59 +2,101 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-export type ParsedQuery = {
-  event?: string;             // e.g. "dinner", "wedding", "lookbook"
-  mood?: string;              // e.g. "minimal", "elegant", "grungy"
-  style?: string;             // e.g. "japanese workwear", "streetwear"
-  gender?: string;            // "men's" | "women's" | "unisex" | undefined
-  items: string[];            // e.g. ["oversized pants", "graphic tee", "sneakers"]
-};
+// --- 1) Simple local fallback parser (never fails) --------------------------
+function cheapParse(q: string) {
+  const text = q.toLowerCase();
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  // crude gender detection
+  let gender = "";
+  if (/\bmen('|’)?s\b/.test(text) || /\bmens\b/.test(text)) gender = "men's";
+  else if (/\bwomen('|’)?s\b/.test(text) || /\bwomens\b/.test(text)) gender = "women's";
+  else if (/\bunisex\b/.test(text)) gender = "unisex";
 
+  // split some common “event / mood / style” words
+  const events = ["dinner", "wedding", "interview", "vacation", "party", "office", "work", "date"];
+  const moods  = ["minimal", "casual", "elegant", "sporty", "cozy", "grunge", "clean", "preppy", "bold"];
+  const styles = ["streetwear", "workwear", "techwear", "y2k", "vintage", "oversized", "tailored", "japanese"];
+
+  const found = (list: string[]) => list.find(w => text.includes(w)) || "";
+
+  const event = found(events);
+  const mood  = found(moods);
+  // include “japanese inspired” etc:
+  let style  = found(styles) || (text.includes("japanese") ? "japanese streetwear" : "");
+
+  // brand scrape (very light)
+  const brandHints = [
+    "nike","adidas","asics","new balance","uniqlo","our legacy","kapital",
+    "prada","bottega veneta","cdg","comme des garcons","kith","supreme"
+  ];
+  const brands = brandHints.filter(b => text.includes(b));
+
+  return { event, mood, style, gender, brands };
+}
+
+// --- 2) API handler ----------------------------------------------------------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const q = (req.body?.q || req.query?.q || "").toString().trim();
-    if (!q) return res.status(400).json({ error: "Missing q" });
+    // accept either POST JSON or querystring
+    const q =
+      (req.method === "POST" ? req.body?.q : req.query?.q) as string | undefined;
 
-    // Short, structured prompt that forces JSON only
-    const sys =
-      "You extract fashion intent from a short sentence. Output compact JSON only. " +
-      "Infer at most one event, one mood, one style, and (men's|women's|unisex) if present. " +
-      "Return up to 4 garment categories the user likely wants (e.g. 'oversized pants', 'graphic tee', 'loafers', 'sneakers', 'denim jacket').";
-
-    const usr = `Text: "${q}"
-Return JSON with keys: event, mood, style, gender, items (array). Example:
-{"event":"dinner","mood":"minimal","style":"japanese workwear","gender":"unisex","items":["oversized pants","loafers","boxy tee"]}`;
-
-    const completion = await client.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: usr },
-      ],
-      temperature: 0.2,
-    });
-
-    const raw = completion.choices?.[0]?.message?.content?.trim() || "{}";
-    let parsed: ParsedQuery;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = { items: [] } as ParsedQuery;
+    if (!q || !q.trim()) {
+      return res.status(400).json({ error: "Missing q" });
     }
 
-    // Normalize types
-    parsed.items = Array.isArray(parsed.items) ? parsed.items.slice(0, 6) : [];
-    if (parsed.gender) {
-      const g = parsed.gender.toLowerCase();
-      if (!["men's", "women's", "unisex"].includes(g)) parsed.gender = undefined;
-      else parsed.gender = g as "men's" | "women's" | "unisex";
+    // Allow disabling AI from env if you want: DISABLE_PARSE_AI=true
+    const aiDisabled = process.env.DISABLE_PARSE_AI === "true";
+
+    // default, cheap, always-works parse
+    let parsed = cheapParse(q);
+
+    // Only try OpenAI if enabled and we have a key
+    if (!aiDisabled && process.env.OPENAI_API_KEY) {
+      try {
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        // Use a model name that all paid keys have: gpt-4o-mini
+        const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+        const prompt = `
+Extract a JSON with:
+- event (single word if possible)
+- mood (single word)
+- style (short phrase like "japanese streetwear" or "minimal workwear")
+- gender (one of "men's", "women's", "unisex" or empty)
+- brands (array of brand names if mentioned)
+Only answer with JSON. Text: """${q}"""
+`;
+
+        // Either chat.completions or responses works; chat.completions is stable
+        const completion = await openai.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: "You extract structured fashion intent." },
+            { role: "user", content: prompt }
+          ],
+          temperature: 0.1
+        });
+
+        const raw = completion.choices?.[0]?.message?.content || "{}";
+        const ai = JSON.parse(raw);
+
+        // Merge AI fields over the cheap ones if present
+        parsed = {
+          event: ai.event || parsed.event,
+          mood: ai.mood || parsed.mood,
+          style: ai.style || parsed.style,
+          gender: ai.gender || parsed.gender,
+          brands: Array.isArray(ai.brands) ? ai.brands : parsed.brands || []
+        };
+      } catch (e: any) {
+        // If OpenAI errors (e.g. invalid model), continue with cheapParse
+        console.warn("AI parse failed; using fallback:", e?.message || e);
+      }
     }
 
-    res.status(200).json({ q, parsed });
+    return res.status(200).json({ q, ...parsed });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || "Unexpected error" });
+    return res.status(500).json({ error: err?.message || "Unexpected error" });
   }
 }
