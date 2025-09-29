@@ -182,9 +182,8 @@ function filterAndRank(raw: ImageResult[], sites: string[], userWords: string[])
   // 2) Keep only allowed retailers (host endsWith any site in RETAILER_SITES)
   results = results.filter((r) => {
     const host = normHost(new URL(r.sourceUrl).hostname);
-    return [...siteSet].some((s) => host.endsWith(s));
-  });
-
+    return  Array.from(siteSet).some((s) => host.endsWith(s));
+});
   // 3) Prefer product-like URLs; drop obvious editorial/blog if we have enough left
   const looksNonProduct = (u: string) =>
     containsAny(u, NON_PRODUCT_HINTS);
