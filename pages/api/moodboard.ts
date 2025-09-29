@@ -1,214 +1,300 @@
 // pages/api/moodboard.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
+/** ---------- Types ---------- */
 type ImageResult = {
   imageUrl: string;
   sourceUrl: string;
   title: string;
-  provider?: string;
+  thumbnailUrl?: string;
+  provider?: string; // host
 };
 
-// ---------- tuning ----------
-const BLOCKED_DOMAINS = [
-  "pinterest.", "pinimg.com", "twitter.com", "x.com",
-  "facebook.com", "wikipedia.org", "reddit.com", "tumblr.com",
-  "youtube.com", "tiktok.com", "blogger.com", "medium.com",
-];
+type Candidate = {
+  title: string;
+  link: string; // product/page url
+  img: string;  // image url
+  host: string; // normalized host
+};
 
-const INCLUDE_INURL = [
-  "product", "products", "prod", "shop", "store",
-  "collections", "collection", "catalog", "item", "p/",
-  "men", "mens", "women", "womens", "unisex"
-];
+/** ---------- Small helpers ---------- */
+const cleanUrl = (s: string) => (s || "").trim();
+const normHost = (h: string) => h.replace(/^www\./i, "").toLowerCase();
+const containsAny = (hay: string, needles: string[]) =>
+  needles.some((n) => hay.includes(n.toLowerCase()));
 
+/** ---------- Heuristics / vocab ---------- */
 const EXCLUDE_INURL = [
-  "kids", "kid", "boys", "boy", "girls", "girl",
-  "junior", "baby", "infant", "toddler",
-  "lookbook", "editorial", "runway",
-  "story", "stories", "journal", "news", "press",
-  "guide", "size", "help", "faq", "terms", "privacy", "careers", "magazine"
+  "/kids/",
+  "/girls/",
+  "/boys/",
+  "/help/",
+  "/blog/",
+  "/story/",
+  "/stories/",
+  "/lookbook",
+  "/press/",
+  "/account/",
+  "/privacy",
+  "/terms",
+  "size-guide",
+  "guide",
+  "policy",
 ];
 
 const EXCLUDE_TERMS = [
-  "kids", "kid", "boys", "boy", "girls", "girl",
-  "junior", "baby", "infant", "toddler"
+  "kids",
+  "toddler",
+  "boy",
+  "girl",
+  "baby",
+  "jogger",
+  "sweats",
+  "hoodie",
+  "sweatshirt",
 ];
 
-const WANT_COUNT_DEFAULT = 24;
+const BLOCKED_DOMAINS = [
+  "pinterest.",
+  "pinimg.com",
+  "twitter.",
+  "x.com",
+  "facebook.",
+  "reddit.",
+  "tumblr.",
+  "wikipedia.",
+];
 
-// ---------- helpers ----------
-function normHost(h: string) { return h.replace(/^www\./i, "").toLowerCase(); }
-function cleanUrl(u: string) {
-  try { const x = new URL(u); x.hash=""; x.search=""; return x.toString(); } catch { return u; }
-}
-function containsAny(s: string, list: string[]) {
-  const t = s.toLowerCase();
-  return list.some(w => t.includes(w.toLowerCase()));
-}
-function buildSiteFilter(sites: string[]) {
-  return sites.map(s => `site:${s}`).join(" OR ");
+/** ---------- Build the text query we send to CSE ---------- */
+function buildTextQuery(opts: {
+  event?: string;
+  mood?: string;
+  style?: string;
+  gender?: string;
+  brands?: string[];
+}) {
+  const { event, mood, style, gender, brands } = opts || {};
+  const parts = [event, mood, style, gender].filter(Boolean);
+  let q = (parts.join(" ") || "outfit").trim();
+  if (brands?.length) q += " " + brands.join(" ");
+  // a tiny nudge toward commercial results
+  q += " outfit -pinterest -review -editorial";
+  return q;
 }
 
-function buildWebQuery(
-  { q, event, mood, style, gender, sites }:
-  { q?: string; event?: string; mood?: string; style?: string; gender?: string; sites: string[] }
-) {
-  const bits: string[] = [];
-  if (q && q.trim()) bits.push(q.trim());
-  else {
-    if (event) bits.push(event);
-    if (mood)  bits.push(mood);
-    if (style) bits.push(style);
-    if (gender) bits.push(gender);
+/** ---------- Google CSE (image) search ---------- */
+async function googleImageSearch(
+  q: string,
+  count: number,
+  key: string,
+  cx: string
+): Promise<any[]> {
+  // Google caps num=10 per request; paginate if you ask for >10
+  const results: any[] = [];
+  let start = 1;
+  while (results.length < count && start <= 91) {
+    const url = new URL("https://www.googleapis.com/customsearch/v1");
+    url.searchParams.set("q", q);
+    url.searchParams.set("searchType", "image");
+    url.searchParams.set("num", String(Math.min(10, count - results.length)));
+    url.searchParams.set("start", String(start));
+    url.searchParams.set("key", key);
+    url.searchParams.set("cx", cx);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      // Return what we have if Google rate-limits temporarily
+      break;
+    }
+    const data = await res.json();
+    const items = (data?.items || []) as any[];
+    results.push(...items);
+    if (!items.length) break;
+    start += items.length;
   }
-  // anchor to fashion shopping
-  bits.push("outfit", "shop");
-
-  const allow = "(" + INCLUDE_INURL.map(k => `inurl:${k}`).join(" OR ") + ")";
-  const deny  = EXCLUDE_INURL.map(k => `-inurl:${k}`).join(" ");
-  const site  = buildSiteFilter(sites);
-
-  const core = bits.filter(Boolean).join(" ");
-  const qstr = `${core} ${allow} ${site} ${deny}`.trim();
-  const excl = EXCLUDE_TERMS.join(","); // for CSE excludeTerms param
-  return { qstr, excludeTerms: excl };
+  return results;
 }
 
-async function googleWebSearch(qstr: string, excludeTerms: string, start: number, num: number) {
-  const key = process.env.GOOGLE_CSE_KEY!;
-  const cx  = process.env.GOOGLE_CSE_ID!;
-  if (!key || !cx) throw new Error("Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID");
-
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("q", qstr);
-  url.searchParams.set("num", String(Math.min(num, 10)));
-  url.searchParams.set("start", String(start));      // 1, 11, 21...
-  url.searchParams.set("key", key);
-  url.searchParams.set("cx", cx);
-  if (excludeTerms) url.searchParams.set("excludeTerms", excludeTerms);
-
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Google CSE web error: ${res.status} ${t}`);
-  }
-  const data = await res.json();
-  return (data.items || []) as any[];
-}
-
-function extractImageFromItem(it: any): string | null {
-  // Prefer cse_image (CSE already parsed OG image)
-  const pm = it.pagemap || {};
-  const cseImg = Array.isArray(pm.cse_image) && pm.cse_image[0]?.src;
-  if (cseImg) return cseImg as string;
-
-  // Fallback: common meta tags if present
-  const meta = Array.isArray(pm.metatags) && pm.metatags[0];
-  if (meta?.["og:image"]) return meta["og:image"];
-  if (meta?.["twitter:image"]) return meta["twitter:image"];
-
-  return null;
-}
-
-function scoreCandidate(title: string, url: string, userWords: string[]) {
-  let s = 0;
-  const full = (title + " " + url).toLowerCase();
-
-  // keyword match boosts
-  for (const w of userWords) if (w && full.includes(w.toLowerCase())) s += 2;
-
-  // producty URL boosts
-  if (containsAny(url, INCLUDE_INURL)) s += 6;
-
-  // editorial/blog penalties
-  if (containsAny(url, EXCLUDE_INURL)) s -= 4;
-
-  return s;
-}
-
-// ---------- API handler ----------
+/** ---------- Next API handler ---------- */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const payload = (req.method === "POST" ? req.body : req.query) as any;
-    const { q, event, mood, style, gender } = payload;
-    const count = Math.max(6, Math.min(Number(payload?.count) || WANT_COUNT_DEFAULT, 48));
+    const { event, mood, style, gender, brands, count = 18, q } = req.method === "POST"
+      ? (req.body || {})
+      : (req.query || {});
 
-    // retailer allow list
-    const sites = (process.env.RETAILER_SITES || "")
+    // 0) ENV checks
+    const key = process.env.GOOGLE_CSE_KEY || "";
+    const cx = process.env.GOOGLE_CSE_ID || "";
+    if (!key || !cx) {
+      return res
+        .status(500)
+        .json({ error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID. Add them in Vercel → Settings → Environment Variables." });
+    }
+
+    // 1) Allowed retailer hosts
+    const siteList = (process.env.RETAILER_SITES || "")
       .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (sites.length === 0) {
-      return res.status(500).json({ error: "No retailer sites configured (RETAILER_SITES)" });
-    }
-
-    if (!q && !event && !mood && !style) {
-      return res.status(400).json({ error: "Provide q or one of: event, mood, style" });
-    }
-
-    const { qstr, excludeTerms } = buildWebQuery({ q, event, mood, style, gender, sites });
-    const userWords = (q || `${event} ${mood} ${style} ${gender}` || "")
-      .split(/\s+/)
-      .map((t: string) => t.trim())
+      .map((s) => normHost(s.trim()))
       .filter(Boolean);
 
-    // Pull multiple pages of **web** results (not image results)
-    const rawItems: any[] = [];
-    for (let start = 1; start <= 21; start += 10) { // pages at 1, 11, 21
-      const batch = await googleWebSearch(qstr, excludeTerms, start, 10);
-      rawItems.push(...batch);
-      if (rawItems.length >= 30) break;
+    if (siteList.length === 0) {
+      return res
+        .status(500)
+        .json({ error: "No retailer sites configured (RETAILER_SITES)" });
     }
+    const siteSet = new Set(siteList);
 
-    // Map → candidates
-    let candidates = rawItems.map((it) => {
-      const link: string = it.link;
-      const img  = extractImageFromItem(it);
-      const title: string = it.title || "";
-      const host = normHost(new URL(link).hostname);
-      return { link, img, title, host };
-    });
+    // 2) Build the query (either user `q`, or from event/mood/style/gender)
+    const baseQ = cleanUrl(Array.isArray(q) ? q[0] : (q as string));
+    const textQuery =
+      baseQ && baseQ.length > 0
+        ? `${baseQ} outfit`
+        : buildTextQuery({ event, mood, style, gender, brands });
 
-    // Filter: allowed hosts only (endsWith any site), block noisy domains, remove kids/editorial
-    const siteSet = new Set(sites.map(s => s.toLowerCase()));
-    candidates = candidates.filter(c => {
+    // 3) Add site: filters so we only search your retailers
+    const siteFilter = Array.from(siteSet)
+      .map((s) => `site:${s}`)
+      .join(" OR ");
+    const finalQuery = `${textQuery} ${siteFilter}`;
+
+    // 4) Call Google CSE (image) search
+    const desired = Math.min(Math.max(Number(count) || 18, 6), 36);
+    const items = await googleImageSearch(finalQuery, desired * 3, key, cx); // fetch more, we’ll filter
+
+    // 5) Map raw items → candidates
+    let candidates: Candidate[] = (items || [])
+      .map((it: any): Candidate | null => {
+        const img = cleanUrl(it?.link); // image url
+        const ctx = cleanUrl(it?.image?.contextLink || it?.image?.context || it?.image?.source || it?.displayLink || "");
+        const link = cleanUrl(ctx || it?.link); // page url (prefer context)
+        const title = cleanUrl(it?.title || "");
+        if (!img || !link) return null;
+        try {
+          const host = normHost(new URL(link).hostname);
+          return { title, link, img, host };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as Candidate[];
+
+    /** =========================
+     *  STRICT FILTER + RANK + DEDUPE
+     *  ========================= */
+
+    // A) Drop blocked domains, non-allowed hosts, noisy sections
+    candidates = candidates.filter((c) => {
       if (!c.img || !c.link) return false;
-      if (BLOCKED_DOMAINS.some(d => c.host.includes(d))) return false;
+      if (BLOCKED_DOMAINS.some((d) => c.host.includes(d))) return false;
 
-      const allowed = Array.from(siteSet).some(s => c.host === s || c.host.endsWith(s));
+      const allowed = Array.from(siteSet).some((s) => c.host === s || c.host.endsWith(s));
       if (!allowed) return false;
 
       const url = (c.link + "").toLowerCase();
+      const title = (c.title + "").toLowerCase();
       if (containsAny(url, EXCLUDE_INURL)) return false;
+      if (containsAny(title, EXCLUDE_TERMS)) return false;
 
       return true;
     });
 
-    // Score & sort
-    candidates.sort((a, b) =>
-      scoreCandidate(b.title, b.link, userWords) - scoreCandidate(a.title, a.link, userWords)
-    );
+    // B) Must-have tokens (derived from user words)
+    const userWords = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
 
-    // De-duplicate by image URL and page URL (normalized)
-    const seenImg = new Set<string>();
-    const seenPage = new Set<string>();
-    const images: ImageResult[] = [];
-    for (const c of candidates) {
-      const imgKey = cleanUrl(c.img);
-      const pageKey = cleanUrl(c.link);
-      if (!imgKey || !pageKey) continue;
-      if (seenImg.has(imgKey) || seenPage.has(pageKey)) continue;
-      seenImg.add(imgKey); seenPage.add(pageKey);
-      images.push({
+    const lcQuery = userWords.join(" ").toLowerCase();
+    const vocab = [
+      "jeans","denim","trousers","pants","skirt","dress","top","tee","t-shirt","shirt","blazer",
+      "heels","boots","sneakers","loafer","sandal","bag","belt","scarf","accessories",
+      "jacket","coat","cardigan","sweater"
+    ];
+    const colors = ["red","black","white","cream","beige","brown","blue","navy","green","grey","gray","pink","olive","khaki"];
+    const MUST_TOKENS: string[] = [];
+    for (const v of [...vocab, ...colors]) {
+      if (lcQuery.includes(v)) MUST_TOKENS.push(v);
+    }
+    const isNightOut = /\b(night\s*out|evening|date\s*night)\b/i.test(lcQuery);
+
+    const hasToken = (s: string, token: string) => s.includes(token.toLowerCase());
+    const passMustTokensAll = (c: Candidate) => {
+      if (MUST_TOKENS.length === 0) return true;
+      const full = (c.title + " " + c.link).toLowerCase();
+      return MUST_TOKENS.every((t) => hasToken(full, t));
+    };
+    const passMustTokensSome = (c: Candidate) => {
+      if (MUST_TOKENS.length === 0) return true;
+      const full = (c.title + " " + c.link).toLowerCase();
+      return MUST_TOKENS.some((t) => hasToken(full, t));
+    };
+
+    // Try strict pass first; if too few, relax
+    let filtered = candidates.filter(passMustTokensAll);
+    if (filtered.length < Math.min(12, desired)) {
+      filtered = candidates.filter(passMustTokensSome);
+    }
+
+    // C) Re-rank: product-like pages + tokens + night-out bias
+    function fashionScore(c: Candidate) {
+      const title = (c.title || "").toLowerCase();
+      const url = (c.link || "").toLowerCase();
+      let s = 0;
+      // product semantics
+      if (containsAny(url, ["product","products","collections","collection","catalog","item","p/"])) s += 8;
+
+      // token hits
+      for (const tok of MUST_TOKENS) if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
+
+      // night out bias
+      if (isNightOut) {
+        if (containsAny(title + url, ["hoodie","sweatshirt","sweatpants","jogger","tracksuit","fleece"])) s -= 6;
+        if (containsAny(title + url, ["heel","stiletto","silk","satin","blazer","dress","tailor","slip"])) s += 4;
+      }
+
+      // small bump for curated retailers (edit to taste)
+      if (containsAny(c.host, ["ssense","farfetch","matchesfashion","mrporter","endclothing","totokaelo"])) s += 2;
+
+      return s;
+    }
+    filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+
+    // D) De-duplicate by (page path + image filename)
+    const seen = new Set<string>();
+    const out: ImageResult[] = [];
+    for (const c of filtered) {
+      const pageKey = (() => {
+        try {
+          const u = new URL(c.link);
+          return `${normHost(u.hostname)}${u.pathname.replace(/\/$/, "")}`;
+        } catch { return cleanUrl(c.link); }
+      })();
+      const imgKey = (() => {
+        try {
+          const u = new URL(c.img);
+          const fn = (u.pathname.split("/").pop() || u.pathname).toLowerCase();
+          return fn.replace(/\.(webp|jpg|jpeg|png|gif|avif)$/, "");
+        } catch { return c.img; }
+      })();
+      const key = `${pageKey}::${imgKey}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push({
         imageUrl: c.img,
         sourceUrl: c.link,
         title: c.title,
-        provider: c.host
+        provider: c.host,
       });
-      if (images.length >= count) break;
+      if (out.length >= desired) break;
     }
 
-    return res.status(200).json({ query: qstr, images, source: "google-cse-web" });
+    return res.status(200).json({
+      query: finalQuery,
+      images: out,
+      source: "google-cse",
+      page: { start: 1, count: out.length },
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Unexpected error" });
   }
