@@ -229,49 +229,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return MUST_TOKENS.some((t) => hasToken(full, t));
     };
 
-    // Try strict pass first; if too few, relax
+       // Try strict pass first; if too few, relax
     let filtered = candidates.filter(passMustTokensAll);
     if (filtered.length < Math.min(12, desired)) {
       filtered = candidates.filter(passMustTokensSome);
     }
 
-   // C) Re-rank: product-like pages + tokens + night-out bias
-const fashionScore = (c: Candidate): number => {
-  const title = (c.title || "").toLowerCase();
-  const url = (c.link || "").toLowerCase();
-  let s = 0;
+    // C) Re-rank: product-like pages + tokens + night-out bias
+    const fashionScore = (c: Candidate): number => {
+      const title = (c.title || "").toLowerCase();
+      const url = (c.link || "").toLowerCase();
+      let s = 0;
 
-  // product semantics
-  if (
-    url.includes("product") ||
-    url.includes("products") ||
-    url.includes("/p/") ||
-    url.includes("collections") ||
-    url.includes("collection") ||
-    url.includes("catalog") ||
-    url.includes("/item/")
-  ) {
-    s += 8;
-  }
+      // strong product signals
+      if (/product|products|\/p\/|collections?|catalog|\/item\//.test(url)) s += 8;
 
-  // token hits
-  for (const tok of MUST_TOKENS) {
-    if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
-  }
+      // token hits
+      for (const tok of MUST_TOKENS) {
+        if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
+      }
 
-  // night out bias
-  if (isNightOut) {
-    if (/(hoodie|sweatshirt|sweatpants|jogger|tracksuit|fleece)/.test(title + url)) s -= 6;
-    if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(title + url)) s += 4;
-  }
+      // night out bias
+      if (isNightOut) {
+        if (/(hoodie|sweatshirt|jogger|tracksuit)/.test(title + url)) s -= 6;
+        if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(title + url)) s += 4;
+      }
 
-  // slight boost for curated retailers
-  if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
+      // curated retailer boost
+      if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
 
-  return s;
-};
+      return s;
+    };
 
-filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+    filtered = filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+
 
 
     // D) De-duplicate by (page path + image filename)
