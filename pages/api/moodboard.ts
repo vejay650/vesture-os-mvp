@@ -235,29 +235,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       filtered = candidates.filter(passMustTokensSome);
     }
 
-    // C) Re-rank: product-like pages + tokens + night-out bias
-    function fashionScore(c: Candidate) {
-      const title = (c.title || "").toLowerCase();
-      const url = (c.link || "").toLowerCase();
-      let s = 0;
-      // product semantics
-      if (containsAny(url, ["product","products","collections","collection","catalog","item","p/"])) s += 8;
+   // C) Re-rank: product-like pages + tokens + night-out bias
+const fashionScore = (c: Candidate): number => {
+  const title = (c.title || "").toLowerCase();
+  const url = (c.link || "").toLowerCase();
+  let s = 0;
 
-      // token hits
-      for (const tok of MUST_TOKENS) if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
+  // product semantics
+  if (
+    url.includes("product") ||
+    url.includes("products") ||
+    url.includes("/p/") ||
+    url.includes("collections") ||
+    url.includes("collection") ||
+    url.includes("catalog") ||
+    url.includes("/item/")
+  ) {
+    s += 8;
+  }
 
-      // night out bias
-      if (isNightOut) {
-        if (containsAny(title + url, ["hoodie","sweatshirt","sweatpants","jogger","tracksuit","fleece"])) s -= 6;
-        if (containsAny(title + url, ["heel","stiletto","silk","satin","blazer","dress","tailor","slip"])) s += 4;
-      }
+  // token hits
+  for (const tok of MUST_TOKENS) {
+    if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
+  }
 
-      // small bump for curated retailers (edit to taste)
-      if (containsAny(c.host, ["ssense","farfetch","matchesfashion","mrporter","endclothing","totokaelo"])) s += 2;
+  // night out bias
+  if (isNightOut) {
+    if (/(hoodie|sweatshirt|sweatpants|jogger|tracksuit|fleece)/.test(title + url)) s -= 6;
+    if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(title + url)) s += 4;
+  }
 
-      return s;
-    }
-    filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+  // slight boost for curated retailers
+  if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
+
+  return s;
+};
+
+filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+
 
     // D) De-duplicate by (page path + image filename)
     const seen = new Set<string>();
