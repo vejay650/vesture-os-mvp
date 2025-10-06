@@ -17,8 +17,8 @@ export default function Results() {
   const [gender, setGender] = useState("");
 
   // Results
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [refs, setRefs] = useState<string[]>([]);           // NEW: click-through URLs
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -54,13 +54,14 @@ export default function Results() {
     const hasStructured = !!(e || mo || st || g);
     const payload: any =
       _q.trim()
-        ? { q: _q.trim(), count: 12 }
+        ? { q: _q.trim(), count: 18 }
         : hasStructured
-        ? { event: e, mood: mo, style: st, gender: g, count: 12 }
+        ? { event: e, mood: mo, style: st, gender: g, count: 18 }
         : null;
 
     if (!payload) {
       setImageUrls([]);
+      setRefs([]);
       setError("Provide q or one of: event, mood, style");
       return;
     }
@@ -68,6 +69,7 @@ export default function Results() {
     setLoading(true);
     setError("");
     setImageUrls([]);
+    setRefs([]);
 
     fetch("/api/moodboard", {
       method: "POST",
@@ -79,21 +81,29 @@ export default function Results() {
         if (data?.error) {
           setError(String(data.error));
           setImageUrls([]);
+          setRefs([]);
           return;
         }
-        const imgs = (data?.images || [])
-          .map((it: any) => it.imageUrl)
-          .filter(Boolean);
 
-        // client-side dedupe
+        // Expect: data.images = [{ imageUrl, sourceUrl, title, provider }]
+        const raw: { imageUrl?: string; sourceUrl?: string }[] = data?.images || [];
+
+        // client-side dedupe by image URL
         const seen = new Set<string>();
-        const unique = imgs.filter((u: string) => {
-          if (seen.has(u)) return false;
-          seen.add(u);
-          return true;
-        });
+        const urls: string[] = [];
+        const hrefs: string[] = [];
 
-        setImageUrls(unique);
+        for (const it of raw) {
+          const u = it?.imageUrl;
+          if (!u) continue;
+          if (seen.has(u)) continue;
+          seen.add(u);
+          urls.push(u);
+          hrefs.push(it?.sourceUrl || u);
+        }
+
+        setImageUrls(urls);
+        setRefs(hrefs);
       })
       .catch(() => setError("Failed to reach server."))
       .finally(() => setLoading(false));
@@ -158,6 +168,7 @@ export default function Results() {
         {!loading && !error && imageUrls.length === 0 && (
           <p style={{ marginTop: 8 }}>No images yet.</p>
         )}
+
         {imageUrls.length > 0 && (
           <div
             style={{
@@ -168,19 +179,27 @@ export default function Results() {
             }}
           >
             {imageUrls.map((url, i) => (
-              <img
+              <a
                 key={`${url}-${i}`}
-                src={url}
-                alt={`moodboard ${i + 1}`}
-                loading="lazy"
-                style={{
-                  width: "100%",
-                  aspectRatio: "1/1",
-                  objectFit: "cover",
-                  borderRadius: 12,
-                  background: "#f4f4f4",
-                }}
-              />
+                href={refs[i] || url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ display: "block" }}
+              >
+                <img
+                  src={url}
+                  alt={`moodboard ${i + 1}`}
+                  loading="lazy"
+                  style={{
+                    width: "100%",
+                    aspectRatio: "1/1",
+                    objectFit: "cover",
+                    borderRadius: 12,
+                    background: "#f4f4f4",
+                    display: "block",
+                  }}
+                />
+              </a>
             ))}
           </div>
         )}
