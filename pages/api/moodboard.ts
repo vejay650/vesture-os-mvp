@@ -265,6 +265,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     filtered = filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+// --- Domain cap to diversify tiles ---
+const perDomainCap = 3;
+const domainCounts = new Map<string, number>();
+
+const diversified: typeof filtered = [];
+for (const c of filtered) {
+  const count = domainCounts.get(c.host) || 0;
+  if (count >= perDomainCap) continue;
+  domainCounts.set(c.host, count + 1);
+  diversified.push(c);
+}
+
+// Use diversified list moving forward
+filtered = diversified;
 
 
 
