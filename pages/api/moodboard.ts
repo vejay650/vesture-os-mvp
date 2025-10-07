@@ -203,42 +203,56 @@ const items = await googleImageSearch(finalQuery, desired * 3, key, cx);
       return true;
     });
 
-    // B) Must-have tokens (derived from user words)
-    const userWords = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`)
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
+   // --- Token extraction & synonyms (handle simple phrases) ---
+const userWords = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`)
+  .trim()
+  .toLowerCase();
 
-    const lcQuery = userWords.join(" ").toLowerCase();
-    const vocab = [
-      "jeans","denim","trousers","pants","skirt","dress","top","tee","t-shirt","shirt","blazer",
-      "heels","boots","sneakers","loafer","sandal","bag","belt","scarf","accessories",
-      "jacket","coat","cardigan","sweater"
-    ];
-    const colors = ["red","black","white","cream","beige","brown","blue","navy","green","grey","gray","pink","olive","khaki"];
-    const MUST_TOKENS: string[] = [];
-    for (const v of [...vocab, ...colors]) {
-      if (lcQuery.includes(v)) MUST_TOKENS.push(v);
-    }
-    const isNightOut = /\b(night\s*out|evening|date\s*night)\b/i.test(lcQuery);
+// synonym expansion to catch simple wording
+const expansions: Record<string, string[]> = {
+  oversized: ["oversized", "baggy", "wide", "loose", "relaxed", "boxy"],
+  minimal: ["minimal", "clean", "simple"],
+  streetwear: ["streetwear", "street", "casual", "urban"],
+  workwear: ["workwear", "utility", "military", "cargo"],
+  loafers: ["loafer", "loafers", "penny loafer"],
+  sneakers: ["sneaker", "sneakers", "trainer", "trainers"],
+  heels: ["heel", "heels", "stiletto"],
+  dress: ["dress", "slip dress"],
+  blazer: ["blazer", "tailored", "suit"],
+  jeans: ["jeans", "denim"],
+  pants: ["pant", "pants", "trouser", "trousers"],
+  skirt: ["skirt", "midi skirt", "mini skirt"],
+  jacket: ["jacket", "coat", "parka", "puffer"],
+  top: ["top", "tee", "t-shirt", "shirt", "blouse", "knit"],
+  bag: ["bag", "tote", "shoulder bag", "crossbody"],
+  nightout: ["night out", "evening", "date night", "party"],
+};
 
-    const hasToken = (s: string, token: string) => s.includes(token.toLowerCase());
-    const passMustTokensAll = (c: Candidate) => {
-      if (MUST_TOKENS.length === 0) return true;
-      const full = (c.title + " " + c.link).toLowerCase();
-      return MUST_TOKENS.every((t) => hasToken(full, t));
-    };
-    const passMustTokensSome = (c: Candidate) => {
-      if (MUST_TOKENS.length === 0) return true;
-      const full = (c.title + " " + c.link).toLowerCase();
-      return MUST_TOKENS.some((t) => hasToken(full, t));
-    };
+const colors = ["red","black","white","cream","beige","brown","blue","navy","green","grey","gray","pink","olive","khaki"];
 
-       // Try strict pass first; if too few, relax
-    let filtered = candidates.filter(passMustTokensAll);
-    if (filtered.length < Math.min(12, desired)) {
-      filtered = candidates.filter(passMustTokensSome);
-    }
+// build token list from phrase
+let queryTokens = new Set<string>();
+for (const [key, list] of Object.entries(expansions)) {
+  if (userWords.includes(key)) list.forEach(t => queryTokens.add(t));
+}
+// also add color words if present
+colors.forEach(c => { if (userWords.includes(c)) queryTokens.add(c); });
+
+const TOKENS = Array.from(queryTokens);
+
+// simple flags
+const isNightOut = /(\bnight\s*out\b|\bevening\b|\bdate\s*night\b|\bparty\b)/i.test(userWords);
+
+// match helpers
+const fullTextOf = (c: Candidate) => (c.title + " " + c.link).toLowerCase();
+const passAll = (c: Candidate) => TOKENS.length === 0 || TOKENS.every(t => fullTextOf(c).includes(t));
+const passSome = (c: Candidate) => TOKENS.length === 0 || TOKENS.some(t => fullTextOf(c).includes(t));
+
+// strict → soft fallback
+let filtered = candidates.filter(passAll);
+if (filtered.length < Math.min(12, desired)) {
+  filtered = candidates.filter(passSome);
+}
 
     // C) Re-rank: product-like pages + tokens + night-out bias
     const fashionScore = (c: Candidate): number => {
