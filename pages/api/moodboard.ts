@@ -160,9 +160,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .join(" OR ");
     const finalQuery = `${textQuery} ${siteFilter}`;
 
-    // 4) Call Google CSE (image) search
-    const desired = Math.min(Math.max(Number(count) || 18, 6), 36);
-    const items = await googleImageSearch(finalQuery, desired * 3, key, cx); // fetch more, we’ll filter
+    // we’ll try to show 18 tiles by default, but never less than 6
+const desired = Math.min(Math.max(Number(count) || 18, 6), 36);
+
+// fetch more from CSE so we can filter hard (3x desired)
+const items = await googleImageSearch(finalQuery, desired * 3, key, cx);
 
     // 5) Map raw items → candidates
     let candidates: Candidate[] = (items || [])
