@@ -264,7 +264,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return s;
     };
 
-    filtered = filtered.sort((a, b) => fashionScore(b) - fashionScore(a));
+// Try "product-ish URL" subset first
+const productish = (c: Candidate) => {
+  const u = (c.link || "").toLowerCase();
+  return (
+    u.includes("/product") ||
+    u.includes("/products") ||
+    u.includes("/p/") ||
+    u.includes("/item/") ||
+    u.includes("/shop/") ||
+    u.includes("/dp/") ||
+    u.includes("/sku/") ||
+    u.includes("/collection") ||
+    u.includes("/collections")
+  );
+};
+
+// Prefer product-style pages; fallback to all if too few
+let ranked = filtered.filter(productish);
+if (ranked.length < Math.min(12, desired)) {
+  ranked = filtered;
+}
+
+// Now rank by score
+ranked.sort((a, b) => fashionScore(b) - fashionScore(a));
+filtered = ranked;
 // --- Domain cap to diversify tiles ---
 const perDomainCap = 3;
 const domainCounts = new Map<string, number>();
