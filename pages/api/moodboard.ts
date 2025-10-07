@@ -264,9 +264,10 @@ if (filtered.length < Math.min(12, desired)) {
       if (/product|products|\/p\/|collections?|catalog|\/item\//.test(url)) s += 8;
 
       // token hits
-      for (const tok of MUST_TOKENS) {
-        if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
-      }
+     for (const tok of TOKENS) {
+  if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
+}
+
 
       // night out bias
       if (isNightOut) {
