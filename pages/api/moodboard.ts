@@ -96,6 +96,9 @@ async function googleImageSearch(
     const url = new URL("https://www.googleapis.com/customsearch/v1");
     url.searchParams.set("q", q);
     url.searchParams.set("searchType", "image");
+    url.searchParams.set("imgType", "photo");     // prefer product shots
+url.searchParams.set("imgSize", "large");     // reduce tiny thumbs
+url.searchParams.set("safe", "active");       // cut some noisy stuff
     url.searchParams.set("num", String(Math.min(10, count - results.length)));
     url.searchParams.set("start", String(start));
     url.searchParams.set("key", key);
