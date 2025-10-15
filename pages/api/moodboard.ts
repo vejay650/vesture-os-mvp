@@ -184,26 +184,33 @@ const items = await googleImageSearch(finalQuery, desired * 3, key, cx);
       .filter(Boolean) as Candidate[];
 
     /** =========================
-     *  STRICT FILTER + RANK + DEDUPE
-     *  ========================= */
+     /** =========================
+ *  STRICT FILTER + RANK + DEDUPE  (RELAXED)
+ *  ========================= */
 
-    // A) Drop blocked domains, non-allowed hosts, noisy sections
-    candidates = candidates.filter((c) => {
-      if (!c.img || !c.link) return false;
-      if (BLOCKED_DOMAINS.some((d) => c.host.includes(d))) return false;
+// A) Drop blocked domains, non-allowed hosts, noisy sections
+let filtered = candidates.filter((c) => {
+  if (!c.img || !c.link) return false;
+  if (BLOCKED_DOMAINS.some((d) => c.host.includes(d))) return false;
 
-      const allowed = Array.from(siteSet).some((s) => c.host === s || c.host.endsWith(s));
-      if (!allowed) return false;
+  // host must be on your whitelist (including subdomains)
+  const allowed = Array.from(siteSet).some((s) => c.host === s || c.host.endsWith(s));
+  if (!allowed) return false;
 
-      const url = (c.link + "").toLowerCase();
-      const title = (c.title + "").toLowerCase();
-      if (containsAny(url, EXCLUDE_INURL)) return false;
-      if (containsAny(title, EXCLUDE_TERMS)) return false;
+  const url = (c.link + "").toLowerCase();
+  const title = (c.title + "").toLowerCase();
+  if (containsAny(url, EXCLUDE_INURL)) return false;
+  if (containsAny(title, EXCLUDE_TERMS)) return false;
 
-      return true;
-    });
+  return true;
+});
 
-   // --- Token extraction & synonyms (handle simple phrases) ---
+const debug: any = {
+  totalItems: candidates.length,
+  afterDomainAndNoiseFilter: filtered.length,
+};
+
+// --- Token extraction & synonyms (handle simple phrases) ---
 const userWords = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`)
   .trim()
   .toLowerCase();
@@ -235,7 +242,6 @@ let queryTokens = new Set<string>();
 for (const [key, list] of Object.entries(expansions)) {
   if (userWords.includes(key)) list.forEach(t => queryTokens.add(t));
 }
-// also add color words if present
 colors.forEach(c => { if (userWords.includes(c)) queryTokens.add(c); });
 
 const TOKENS = Array.from(queryTokens);
@@ -243,45 +249,26 @@ const TOKENS = Array.from(queryTokens);
 // simple flags
 const isNightOut = /(\bnight\s*out\b|\bevening\b|\bdate\s*night\b|\bparty\b)/i.test(userWords);
 
-// match helpers
+// helpers for token passes
 const fullTextOf = (c: Candidate) => (c.title + " " + c.link).toLowerCase();
 const passAll = (c: Candidate) => TOKENS.length === 0 || TOKENS.every(t => fullTextOf(c).includes(t));
 const passSome = (c: Candidate) => TOKENS.length === 0 || TOKENS.some(t => fullTextOf(c).includes(t));
 
-// strict → soft fallback
-let filtered = candidates.filter(passAll);
-if (filtered.length < Math.min(12, desired)) {
-  filtered = candidates.filter(passSome);
+// Try strict → then soft → then “no token filter” fallback
+let tokenStage = "all";
+let tokenFiltered = filtered.filter(passAll);
+if (tokenFiltered.length < Math.min(12, desired)) {
+  tokenStage = "some";
+  tokenFiltered = filtered.filter(passSome);
 }
-
-    // C) Re-rank: product-like pages + tokens + night-out bias
-    const fashionScore = (c: Candidate): number => {
-      const title = (c.title || "").toLowerCase();
-      const url = (c.link || "").toLowerCase();
-      let s = 0;
-
-      // strong product signals
-      if (/product|products|\/p\/|collections?|catalog|\/item\//.test(url)) s += 8;
-
-      // token hits
-     for (const tok of TOKENS) {
-  if (tok && (title.includes(tok) || url.includes(tok))) s += 3;
+if (tokenFiltered.length < Math.min(8, desired)) {
+  tokenStage = "none";
+  tokenFiltered = filtered.slice(0); // accept everything that passed host/noise checks
 }
+debug.afterTokenFilter = tokenFiltered.length;
+debug.tokenStage = tokenStage;
 
-
-      // night out bias
-      if (isNightOut) {
-        if (/(hoodie|sweatshirt|jogger|tracksuit)/.test(title + url)) s -= 6;
-        if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(title + url)) s += 4;
-      }
-
-      // curated retailer boost
-      if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
-
-      return s;
-    };
-
-// Try "product-ish URL" subset first
+// Prefer product-ish URLs first; fallback if too few
 const productish = (c: Candidate) => {
   const u = (c.link || "").toLowerCase();
   return (
@@ -293,67 +280,107 @@ const productish = (c: Candidate) => {
     u.includes("/dp/") ||
     u.includes("/sku/") ||
     u.includes("/collection") ||
-    u.includes("/collections")
+    u.includes("/collections") ||
+    u.includes("/catalog")
   );
 };
 
-// Prefer product-style pages; fallback to all if too few
-let ranked = filtered.filter(productish);
-if (ranked.length < Math.min(12, desired)) {
-  ranked = filtered;
+let ranked = tokenFiltered.filter(productish);
+if (ranked.length < Math.max(6, Math.round(desired * 0.5))) {
+  ranked = tokenFiltered; // relax if not enough
 }
 
-// Now rank by score
+// scoring prefers product tokens, user tokens, and night-out context
+const fashionScore = (c: Candidate): number => {
+  const title = (c.title || "").toLowerCase();
+  const url = (c.link || "").toLowerCase();
+  const text = title + " " + url;
+  let s = 0;
+
+  if (productish(c)) s += 8;
+  for (const tok of TOKENS) if (text.includes(tok)) s += 3;
+
+  if (isNightOut) {
+    if (/(hoodie|sweatshirt|sweatpants|jogger|tracksuit|fleece)/.test(text)) s -= 6;
+    if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(text)) s += 4;
+  }
+
+  if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
+
+  return s;
+};
+
 ranked.sort((a, b) => fashionScore(b) - fashionScore(a));
-filtered = ranked;
+
 // --- Domain cap to diversify tiles ---
 const perDomainCap = 3;
 const domainCounts = new Map<string, number>();
-
-const diversified: typeof filtered = [];
-for (const c of filtered) {
+const diversified: typeof ranked = [];
+for (const c of ranked) {
   const count = domainCounts.get(c.host) || 0;
   if (count >= perDomainCap) continue;
   domainCounts.set(c.host, count + 1);
   diversified.push(c);
 }
-
-// Use diversified list moving forward
 filtered = diversified;
 
+// D) De-duplicate by (page path + image filename)
+const seen = new Set<string>();
+const out: ImageResult[] = [];
+for (const c of filtered) {
+  const pageKey = (() => {
+    try {
+      const u = new URL(c.link);
+      return `${normHost(u.hostname)}${u.pathname.replace(/\/$/, "")}`;
+    } catch { return cleanUrl(c.link); }
+  })();
+  const imgKey = (() => {
+    try {
+      const u = new URL(c.img);
+      const fn = (u.pathname.split("/").pop() || u.pathname).toLowerCase();
+      return fn.replace(/\.(webp|jpg|jpeg|png|gif|avif)$/, "");
+    } catch { return c.img; }
+  })();
+  const k = `${pageKey}::${imgKey}`;
+  if (seen.has(k)) continue;
+  seen.add(k);
 
+  out.push({
+    imageUrl: c.img,
+    sourceUrl: c.link,
+    title: c.title,
+    provider: c.host,
+  });
+  if (out.length >= desired) break;
+}
+debug.final = out.length;
 
-    // D) De-duplicate by (page path + image filename)
-    const seen = new Set<string>();
-    const out: ImageResult[] = [];
-    for (const c of filtered) {
-      const pageKey = (() => {
-        try {
-          const u = new URL(c.link);
-          return `${normHost(u.hostname)}${u.pathname.replace(/\/$/, "")}`;
-        } catch { return cleanUrl(c.link); }
-      })();
-      const imgKey = (() => {
-        try {
-          const u = new URL(c.img);
-          const fn = (u.pathname.split("/").pop() || u.pathname).toLowerCase();
-          return fn.replace(/\.(webp|jpg|jpeg|png|gif|avif)$/, "");
-        } catch { return c.img; }
-      })();
-      const key = `${pageKey}::${imgKey}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+// If still empty, return top raw images (last-resort) so UI never blanks
+if (out.length === 0 && filtered.length) {
+  const fallback = filtered.slice(0, Math.max(6, desired)).map((c) => ({
+    imageUrl: c.img,
+    sourceUrl: c.link,
+    title: c.title,
+    provider: c.host,
+  }));
+  return res.status(200).json({
+    query: finalQuery,
+    images: fallback,
+    source: "google-cse",
+    debug,
+    page: { start: 1, count: fallback.length },
+  });
+}
 
-      out.push({
-        imageUrl: c.img,
-        sourceUrl: c.link,
-        title: c.title,
-        provider: c.host,
-      });
-      if (out.length >= desired) break;
-    }
+// Normal success
+return res.status(200).json({
+  query: finalQuery,
+  images: out,
+  source: "google-cse",
+  debug,
+  page: { start: 1, count: out.length },
+});
 
-    return res.status(200).json({
       query: finalQuery,
       images: out,
       source: "google-cse",
