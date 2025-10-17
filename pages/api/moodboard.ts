@@ -7,7 +7,7 @@ type ImageResult = {
   sourceUrl: string;
   title: string;
   thumbnailUrl?: string;
-  provider?: string; // host
+  provider?: string; // normalized host
 };
 
 type Candidate = {
@@ -18,51 +18,34 @@ type Candidate = {
 };
 
 /** ---------- Small helpers ---------- */
-const cleanUrl = (s: string) => (s || "").trim();
-const normHost = (h: string) => h.replace(/^www\./i, "").toLowerCase();
-const containsAny = (hay: string, needles: string[]) =>
-  needles.some((n) => hay.includes(n.toLowerCase()));
+const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
+const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
+const containsAny = (hay: string, needles: string[]) => {
+  const lc = hay.toLowerCase();
+  for (let i = 0; i < needles.length; i++) {
+    if (lc.includes(needles[i].toLowerCase())) return true;
+  }
+  return false;
+};
 
 /** ---------- Heuristics / vocab ---------- */
 const EXCLUDE_INURL = [
-  "/kids/",
-  "/girls/",
-  "/boys/",
-  "/help/",
-  "/blog/",
-  "/story/",
-  "/stories/",
-  "/lookbook",
-  "/press/",
-  "/account/",
-  "/privacy",
-  "/terms",
-  "size-guide",
-  "guide",
-  "policy",
+  "/kids/", "/girls/", "/boys/", "/baby/",
+  "/help/", "/blog/", "/story/", "/stories/", "/press/",
+  "/account/", "/privacy", "/terms",
+  "size-guide", "size_guide", "guide", "policy",
+  "/lookbook"
 ];
 
 const EXCLUDE_TERMS = [
-  "kids",
-  "toddler",
-  "boy",
-  "girl",
-  "baby",
-  "jogger",
-  "sweats",
-  "hoodie",
-  "sweatshirt",
+  "kids", "toddler", "boy", "girl", "baby",
 ];
 
 const BLOCKED_DOMAINS = [
-  "pinterest.",
-  "pinimg.com",
-  "twitter.",
-  "x.com",
-  "facebook.",
-  "reddit.",
-  "tumblr.",
-  "wikipedia.",
+  "pinterest.", "pinimg.com",
+  "twitter.", "x.com",
+  "facebook.", "reddit.", "tumblr.",
+  "wikipedia."
 ];
 
 /** ---------- Build the text query we send to CSE ---------- */
@@ -74,316 +57,363 @@ function buildTextQuery(opts: {
   brands?: string[];
 }) {
   const { event, mood, style, gender, brands } = opts || {};
-  const parts = [event, mood, style, gender].filter(Boolean);
+  const parts = [event, mood, style, gender].filter(Boolean) as string[];
   let q = (parts.join(" ") || "outfit").trim();
-  if (brands?.length) q += " " + brands.join(" ");
-  // a tiny nudge toward commercial results
+  if (brands && brands.length) q += " " + brands.join(" ");
+  // nudge toward commercial results; avoid editorial
   q += " outfit -pinterest -review -editorial";
   return q;
 }
 
-/** ---------- Google CSE (image) search ---------- */
+/** ---------- Google CSE (image) search with pagination ---------- */
 async function googleImageSearch(
   q: string,
   count: number,
   key: string,
   cx: string
 ): Promise<any[]> {
-  // Google caps num=10 per request; paginate if you ask for >10
   const results: any[] = [];
   let start = 1;
+
   while (results.length < count && start <= 91) {
     const url = new URL("https://www.googleapis.com/customsearch/v1");
     url.searchParams.set("q", q);
     url.searchParams.set("searchType", "image");
-    url.searchParams.set("imgType", "photo");     // prefer product shots
-url.searchParams.set("imgSize", "large");     // reduce tiny thumbs
-url.searchParams.set("safe", "active");       // cut some noisy stuff
     url.searchParams.set("num", String(Math.min(10, count - results.length)));
     url.searchParams.set("start", String(start));
     url.searchParams.set("key", key);
     url.searchParams.set("cx", cx);
+    // image hints
+    url.searchParams.set("imgType", "photo");
+    url.searchParams.set("imgSize", "large");
+    url.searchParams.set("safe", "active");
 
     const res = await fetch(url.toString());
-    if (!res.ok) {
-      // Return what we have if Google rate-limits temporarily
-      break;
-    }
+    if (!res.ok) break; // if rate-limited or quota, bail with what we have
     const data = await res.json();
     const items = (data?.items || []) as any[];
-    results.push(...items);
     if (!items.length) break;
+
+    results.push(...items);
     start += items.length;
   }
+
   return results;
 }
 
-/** ---------- Next API handler ---------- */
+/** ---------- API Handler ---------- */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const { event, mood, style, gender, brands, count = 18, q } = req.method === "POST"
-      ? (req.body || {})
-      : (req.query || {});
+    // Support POST (body) and GET (query)
+    const isPost = req.method === "POST";
+    const bodyOrQuery: any = isPost ? (req.body || {}) : (req.query || {});
 
-    // 0) ENV checks
-    const key = process.env.GOOGLE_CSE_KEY || "";
-    const cx = process.env.GOOGLE_CSE_ID || "";
+    const event = clean(bodyOrQuery.event);
+    const mood = clean(bodyOrQuery.mood);
+    const style = clean(bodyOrQuery.style);
+    const gender = clean(bodyOrQuery.gender);
+    const brands = Array.isArray(bodyOrQuery.brands) ? bodyOrQuery.brands : undefined;
+    const qParam = clean(Array.isArray(bodyOrQuery.q) ? bodyOrQuery.q[0] : bodyOrQuery.q);
+    const countRaw = Number(bodyOrQuery.count);
+    const desired = Math.min(Math.max(isFinite(countRaw) && countRaw > 0 ? countRaw : 18, 6), 36);
+
+    // ENV
+    const key = clean(process.env.GOOGLE_CSE_KEY);
+    const cx = clean(process.env.GOOGLE_CSE_ID);
     if (!key || !cx) {
-      return res
-        .status(500)
-        .json({ error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID. Add them in Vercel → Settings → Environment Variables." });
+      return res.status(500).json({
+        error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID. Add them in Vercel → Settings → Environment Variables."
+      });
     }
 
-    // 1) Allowed retailer hosts
-    const siteList = (process.env.RETAILER_SITES || "")
+    // Allowed retailer hosts
+    const sitesEnv = clean(process.env.RETAILER_SITES || "");
+    const siteList = sitesEnv
       .split(",")
-      .map((s) => normHost(s.trim()))
+      .map((s) => normHost(s))
       .filter(Boolean);
-
     if (siteList.length === 0) {
-      return res
-        .status(500)
-        .json({ error: "No retailer sites configured (RETAILER_SITES)" });
+      return res.status(500).json({ error: "No retailer sites configured (RETAILER_SITES)" });
     }
-    const siteSet = new Set(siteList);
 
-    // 2) Build the query (either user `q`, or from event/mood/style/gender)
-    const baseQ = cleanUrl(Array.isArray(q) ? q[0] : (q as string));
-    const textQuery =
-      baseQ && baseQ.length > 0
-        ? `${baseQ} outfit`
-        : buildTextQuery({ event, mood, style, gender, brands });
+    // Build text query
+    const baseQ = qParam;
+    const textQuery = baseQ
+      ? `${baseQ} outfit`
+      : buildTextQuery({ event, mood, style, gender, brands });
 
-    // 3) Add site: filters so we only search your retailers
-    const siteFilter = Array.from(siteSet)
-      .map((s) => `site:${s}`)
-      .join(" OR ");
-    const finalQuery = `${textQuery} ${siteFilter}`;
+    // Add site filters
+    // (avoid [...new Set] for ES5; Set is fine, but we iterate via Array.from)
+    const siteSet = new Set<string>();
+    for (let i = 0; i < siteList.length; i++) siteSet.add(siteList[i]);
 
-    // we’ll try to show 18 tiles by default, but never less than 6
-const desired = Math.min(Math.max(Number(count) || 18, 6), 36);
+    let siteFilter = "";
+    {
+      const arr = Array.from(siteSet);
+      const pieces: string[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        pieces.push(`site:${arr[i]}`);
+      }
+      siteFilter = pieces.join(" OR ");
+    }
 
-// fetch more from CSE so we can filter hard (3x desired)
-const items = await googleImageSearch(finalQuery, desired * 3, key, cx);
+    const finalQuery = `${textQuery} ${siteFilter}`.trim();
 
-    // 5) Map raw items → candidates
-    let candidates: Candidate[] = (items || [])
-      .map((it: any): Candidate | null => {
-        const img = cleanUrl(it?.link); // image url
-        const ctx = cleanUrl(it?.image?.contextLink || it?.image?.context || it?.image?.source || it?.displayLink || "");
-        const link = cleanUrl(ctx || it?.link); // page url (prefer context)
-        const title = cleanUrl(it?.title || "");
-        if (!img || !link) return null;
-        try {
-          const host = normHost(new URL(link).hostname);
-          return { title, link, img, host };
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean) as Candidate[];
+    // Query CSE (fetch extra so we can filter hard)
+    const items = await googleImageSearch(finalQuery, desired * 3, key, cx);
+
+    // Map to candidates
+    let candidates: Candidate[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const img = clean(it?.link); // image url
+      const ctx = clean(it?.image?.contextLink || it?.image?.context || it?.image?.source || it?.displayLink || "");
+      const link = clean(ctx || it?.link); // page url (prefer context)
+      const title = clean(it?.title || "");
+      if (!img || !link) continue;
+      try {
+        const host = normHost(new URL(link).hostname);
+        candidates.push({ title, link, img, host });
+      } catch {
+        // ignore malformed
+      }
+    }
 
     /** =========================
-     /** =========================
- *  STRICT FILTER + RANK + DEDUPE  (RELAXED)
- *  ========================= */
+     *  STRICT FILTER + RANK + DEDUPE  (RELAXED)
+     *  ========================= */
 
-// A) Drop blocked domains, non-allowed hosts, noisy sections
-let filtered = candidates.filter((c) => {
-  if (!c.img || !c.link) return false;
-  if (BLOCKED_DOMAINS.some((d) => c.host.includes(d))) return false;
+    // A) Domain + noise filters
+    let filtered = candidates.filter((c) => {
+      if (!c.img || !c.link) return false;
+      for (let b = 0; b < BLOCKED_DOMAINS.length; b++) {
+        if (c.host.includes(BLOCKED_DOMAINS[b])) return false;
+      }
+      // must be in whitelist (allow subdomains)
+      let allowed = false;
+      const arr = Array.from(siteSet);
+      for (let i = 0; i < arr.length; i++) {
+        const s = arr[i];
+        if (c.host === s || c.host.endsWith(s)) {
+          allowed = true;
+          break;
+        }
+      }
+      if (!allowed) return false;
 
-  // host must be on your whitelist (including subdomains)
-  const allowed = Array.from(siteSet).some((s) => c.host === s || c.host.endsWith(s));
-  if (!allowed) return false;
+      const url = (c.link + "").toLowerCase();
+      const title = (c.title + "").toLowerCase();
+      if (containsAny(url, EXCLUDE_INURL)) return false;
+      if (containsAny(title, EXCLUDE_TERMS)) return false;
 
-  const url = (c.link + "").toLowerCase();
-  const title = (c.title + "").toLowerCase();
-  if (containsAny(url, EXCLUDE_INURL)) return false;
-  if (containsAny(title, EXCLUDE_TERMS)) return false;
+      return true;
+    });
 
-  return true;
-});
+    const debug: any = {
+      totalItems: candidates.length,
+      afterDomainAndNoiseFilter: filtered.length,
+    };
 
-const debug: any = {
-  totalItems: candidates.length,
-  afterDomainAndNoiseFilter: filtered.length,
-};
+    // B) Token extraction & synonyms for simple phrases
+    const phrase = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`).trim().toLowerCase();
 
-// --- Token extraction & synonyms (handle simple phrases) ---
-const userWords = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`)
-  .trim()
-  .toLowerCase();
+    const expansions: Record<string, string[]> = {
+      oversized: ["oversized", "baggy", "wide", "loose", "relaxed", "boxy"],
+      minimal: ["minimal", "clean", "simple"],
+      streetwear: ["streetwear", "street", "casual", "urban"],
+      workwear: ["workwear", "utility", "military", "cargo"],
+      loafers: ["loafer", "loafers", "penny loafer"],
+      sneakers: ["sneaker", "sneakers", "trainer", "trainers"],
+      heels: ["heel", "heels", "stiletto"],
+      dress: ["dress", "slip dress"],
+      blazer: ["blazer", "tailored", "suit"],
+      jeans: ["jeans", "denim"],
+      pants: ["pant", "pants", "trouser", "trousers"],
+      skirt: ["skirt", "midi skirt", "mini skirt"],
+      jacket: ["jacket", "coat", "parka", "puffer"],
+      top: ["top", "tee", "t-shirt", "shirt", "blouse", "knit"],
+      bag: ["bag", "tote", "shoulder bag", "crossbody"],
+      nightout: ["night out", "evening", "date night", "party"],
+    };
 
-// synonym expansion to catch simple wording
-const expansions: Record<string, string[]> = {
-  oversized: ["oversized", "baggy", "wide", "loose", "relaxed", "boxy"],
-  minimal: ["minimal", "clean", "simple"],
-  streetwear: ["streetwear", "street", "casual", "urban"],
-  workwear: ["workwear", "utility", "military", "cargo"],
-  loafers: ["loafer", "loafers", "penny loafer"],
-  sneakers: ["sneaker", "sneakers", "trainer", "trainers"],
-  heels: ["heel", "heels", "stiletto"],
-  dress: ["dress", "slip dress"],
-  blazer: ["blazer", "tailored", "suit"],
-  jeans: ["jeans", "denim"],
-  pants: ["pant", "pants", "trouser", "trousers"],
-  skirt: ["skirt", "midi skirt", "mini skirt"],
-  jacket: ["jacket", "coat", "parka", "puffer"],
-  top: ["top", "tee", "t-shirt", "shirt", "blouse", "knit"],
-  bag: ["bag", "tote", "shoulder bag", "crossbody"],
-  nightout: ["night out", "evening", "date night", "party"],
-};
+    const colors = ["red","black","white","cream","beige","brown","blue","navy","green","grey","gray","pink","olive","khaki"];
 
-const colors = ["red","black","white","cream","beige","brown","blue","navy","green","grey","gray","pink","olive","khaki"];
+    const tokenSet = new Set<string>();
+    for (const key in expansions) {
+      if (Object.prototype.hasOwnProperty.call(expansions, key)) {
+        if (phrase.includes(key)) {
+          const arr = expansions[key];
+          for (let i = 0; i < arr.length; i++) tokenSet.add(arr[i]);
+        }
+      }
+    }
+    for (let i = 0; i < colors.length; i++) {
+      const c = colors[i];
+      if (phrase.includes(c)) tokenSet.add(c);
+    }
+    const TOKENS = Array.from(tokenSet);
 
-// build token list from phrase
-let queryTokens = new Set<string>();
-for (const [key, list] of Object.entries(expansions)) {
-  if (userWords.includes(key)) list.forEach(t => queryTokens.add(t));
-}
-colors.forEach(c => { if (userWords.includes(c)) queryTokens.add(c); });
+    const isNightOut = /(\bnight\s*out\b|\bevening\b|\bdate\s*night\b|\bparty\b)/i.test(phrase);
 
-const TOKENS = Array.from(queryTokens);
+    const fullTextOf = (c: Candidate) => (c.title + " " + c.link).toLowerCase();
+    const passAll = (c: Candidate) => {
+      if (TOKENS.length === 0) return true;
+      const t = fullTextOf(c);
+      for (let i = 0; i < TOKENS.length; i++) {
+        if (!t.includes(TOKENS[i])) return false;
+      }
+      return true;
+    };
+    const passSome = (c: Candidate) => {
+      if (TOKENS.length === 0) return true;
+      const t = fullTextOf(c);
+      for (let i = 0; i < TOKENS.length; i++) {
+        if (t.includes(TOKENS[i])) return true;
+      }
+      return false;
+    };
 
-// simple flags
-const isNightOut = /(\bnight\s*out\b|\bevening\b|\bdate\s*night\b|\bparty\b)/i.test(userWords);
+    // strict → soft → none
+    let tokenStage = "all";
+    let tokenFiltered = filtered.filter(passAll);
 
-// helpers for token passes
-const fullTextOf = (c: Candidate) => (c.title + " " + c.link).toLowerCase();
-const passAll = (c: Candidate) => TOKENS.length === 0 || TOKENS.every(t => fullTextOf(c).includes(t));
-const passSome = (c: Candidate) => TOKENS.length === 0 || TOKENS.some(t => fullTextOf(c).includes(t));
+    if (tokenFiltered.length < Math.min(12, desired)) {
+      tokenStage = "some";
+      tokenFiltered = filtered.filter(passSome);
+    }
+    if (tokenFiltered.length < Math.min(8, desired)) {
+      tokenStage = "none";
+      tokenFiltered = filtered.slice(0);
+    }
 
-// Try strict → then soft → then “no token filter” fallback
-let tokenStage = "all";
-let tokenFiltered = filtered.filter(passAll);
-if (tokenFiltered.length < Math.min(12, desired)) {
-  tokenStage = "some";
-  tokenFiltered = filtered.filter(passSome);
-}
-if (tokenFiltered.length < Math.min(8, desired)) {
-  tokenStage = "none";
-  tokenFiltered = filtered.slice(0); // accept everything that passed host/noise checks
-}
-debug.afterTokenFilter = tokenFiltered.length;
-debug.tokenStage = tokenStage;
+    debug.afterTokenFilter = tokenFiltered.length;
+    debug.tokenStage = tokenStage;
 
-// Prefer product-ish URLs first; fallback if too few
-const productish = (c: Candidate) => {
-  const u = (c.link || "").toLowerCase();
-  return (
-    u.includes("/product") ||
-    u.includes("/products") ||
-    u.includes("/p/") ||
-    u.includes("/item/") ||
-    u.includes("/shop/") ||
-    u.includes("/dp/") ||
-    u.includes("/sku/") ||
-    u.includes("/collection") ||
-    u.includes("/collections") ||
-    u.includes("/catalog")
-  );
-};
+    // C) Product-ish preference with graceful fallback
+    const productish = (c: Candidate) => {
+      const u = (c.link || "").toLowerCase();
+      return (
+        u.includes("/product") ||
+        u.includes("/products") ||
+        u.includes("/p/") ||
+        u.includes("/item/") ||
+        u.includes("/shop/") ||
+        u.includes("/dp/") ||
+        u.includes("/sku/") ||
+        u.includes("/collection") ||
+        u.includes("/collections") ||
+        u.includes("/catalog")
+      );
+    };
 
-let ranked = tokenFiltered.filter(productish);
-if (ranked.length < Math.max(6, Math.round(desired * 0.5))) {
-  ranked = tokenFiltered; // relax if not enough
-}
+    let ranked = tokenFiltered.filter(productish);
+    if (ranked.length < Math.max(6, Math.round(desired * 0.5))) {
+      ranked = tokenFiltered;
+    }
 
-// scoring prefers product tokens, user tokens, and night-out context
-const fashionScore = (c: Candidate): number => {
-  const title = (c.title || "").toLowerCase();
-  const url = (c.link || "").toLowerCase();
-  const text = title + " " + url;
-  let s = 0;
+    const fashionScore = (c: Candidate): number => {
+      const title = (c.title || "").toLowerCase();
+      const url = (c.link || "").toLowerCase();
+      const text = title + " " + url;
+      let s = 0;
 
-  if (productish(c)) s += 8;
-  for (const tok of TOKENS) if (text.includes(tok)) s += 3;
+      if (productish(c)) s += 8;
 
-  if (isNightOut) {
-    if (/(hoodie|sweatshirt|sweatpants|jogger|tracksuit|fleece)/.test(text)) s -= 6;
-    if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(text)) s += 4;
-  }
+      for (let i = 0; i < TOKENS.length; i++) {
+        const tok = TOKENS[i];
+        if (tok && text.includes(tok)) s += 3;
+      }
 
-  if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
+      if (isNightOut) {
+        if (/(hoodie|sweatshirt|sweatpants|jogger|tracksuit|fleece)/.test(text)) s -= 6;
+        if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(text)) s += 4;
+      }
 
-  return s;
-};
+      if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
 
-ranked.sort((a, b) => fashionScore(b) - fashionScore(a));
+      return s;
+    };
 
-// --- Domain cap to diversify tiles ---
-const perDomainCap = 3;
-const domainCounts = new Map<string, number>();
-const diversified: typeof ranked = [];
-for (const c of ranked) {
-  const count = domainCounts.get(c.host) || 0;
-  if (count >= perDomainCap) continue;
-  domainCounts.set(c.host, count + 1);
-  diversified.push(c);
-}
-filtered = diversified;
+    ranked.sort((a, b) => fashionScore(b) - fashionScore(a));
 
-// D) De-duplicate by (page path + image filename)
-const seen = new Set<string>();
-const out: ImageResult[] = [];
-for (const c of filtered) {
-  const pageKey = (() => {
-    try {
-      const u = new URL(c.link);
-      return `${normHost(u.hostname)}${u.pathname.replace(/\/$/, "")}`;
-    } catch { return cleanUrl(c.link); }
-  })();
-  const imgKey = (() => {
-    try {
-      const u = new URL(c.img);
-      const fn = (u.pathname.split("/").pop() || u.pathname).toLowerCase();
-      return fn.replace(/\.(webp|jpg|jpeg|png|gif|avif)$/, "");
-    } catch { return c.img; }
-  })();
-  const k = `${pageKey}::${imgKey}`;
-  if (seen.has(k)) continue;
-  seen.add(k);
+    // --- Domain cap to diversify tiles ---
+    const perDomainCap = 3;
+    const domainCounts = new Map<string, number>();
+    const diversified: Candidate[] = [];
+    for (let i = 0; i < ranked.length; i++) {
+      const c = ranked[i];
+      const count = domainCounts.get(c.host) || 0;
+      if (count >= perDomainCap) continue;
+      domainCounts.set(c.host, count + 1);
+      diversified.push(c);
+    }
+    filtered = diversified;
 
-  out.push({
-    imageUrl: c.img,
-    sourceUrl: c.link,
-    title: c.title,
-    provider: c.host,
-  });
-  if (out.length >= desired) break;
-}
-debug.final = out.length;
+    // D) Dedupe by page path + image filename
+    const seen = new Set<string>();
+    const out: ImageResult[] = [];
+    for (let i = 0; i < filtered.length; i++) {
+      const c = filtered[i];
 
-// If still empty, return top raw images (last-resort) so UI never blanks
-if (out.length === 0 && filtered.length) {
-  const fallback = filtered.slice(0, Math.max(6, desired)).map((c) => ({
-    imageUrl: c.img,
-    sourceUrl: c.link,
-    title: c.title,
-    provider: c.host,
-  }));
-  return res.status(200).json({
-    query: finalQuery,
-    images: fallback,
-    source: "google-cse",
-    debug,
-    page: { start: 1, count: fallback.length },
-  });
-}
+      let pageKey = clean(c.link);
+      try {
+        const u = new URL(c.link);
+        pageKey = `${normHost(u.hostname)}${u.pathname.replace(/\/$/, "")}`;
+      } catch {
+        // ignore
+      }
 
-// Normal success
-return res.status(200).json({
-  query: finalQuery,
-  images: out,
-  source: "google-cse",
-  debug,
-  page: { start: 1, count: out.length },
-});
+      let imgKey = c.img;
+      try {
+        const u = new URL(c.img);
+        const fn = (u.pathname.split("/").pop() || u.pathname).toLowerCase();
+        imgKey = fn.replace(/\.(webp|jpg|jpeg|png|gif|avif)$/, "");
+      } catch {
+        // ignore
+      }
 
+      const k = `${pageKey}::${imgKey}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+
+      out.push({
+        imageUrl: c.img,
+        sourceUrl: c.link,
+        title: c.title,
+        provider: c.host,
+      });
+      if (out.length >= desired) break;
+    }
+    debug.final = out.length;
+
+    // Fallback so UI never blanks
+    if (out.length === 0 && filtered.length) {
+      const fallback: ImageResult[] = [];
+      const limit = Math.max(6, desired);
+      for (let i = 0; i < filtered.length && fallback.length < limit; i++) {
+        const c = filtered[i];
+        fallback.push({
+          imageUrl: c.img,
+          sourceUrl: c.link,
+          title: c.title,
+          provider: c.host,
+        });
+      }
+      return res.status(200).json({
+        query: finalQuery,
+        images: fallback,
+        source: "google-cse",
+        debug,
+        page: { start: 1, count: fallback.length },
+      });
+    }
+
+    // Normal success
+    return res.status(200).json({
       query: finalQuery,
       images: out,
       source: "google-cse",
+      debug,
       page: { start: 1, count: out.length },
     });
   } catch (err: any) {
