@@ -1,125 +1,145 @@
 // pages/consult.tsx
-import React from "react";
+import Image from "next/image";
+import Link from "next/link";
 
 export default function Consult() {
+  const bg = "#EAE5DB"; // Canva background color
+
   return (
-    <main style={{maxWidth: 960, margin: "0 auto", padding: "48px 20px", fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif"}}>
-      <header style={{textAlign: "center", marginBottom: 28}}>
-        <h1 style={{fontSize: 36, margin: 0}}>Fashion & Style Consulting</h1>
-        <p style={{color: "#555", marginTop: 10}}>
-          Helping individuals + creatives elevate their look with intention and vibe.
+    <main
+      style={{
+        background: bg,
+        minHeight: "100vh",
+        padding: "40px 20px",
+        fontFamily: "'TT Commons Pro', sans-serif",
+        color: "#4A453E",
+        maxWidth: 1000,
+        margin: "0 auto",
+      }}
+    >
+      <header style={{ textAlign: "center", marginBottom: 40 }}>
+        <h1
+          style={{
+            fontSize: "48px",
+            fontWeight: 400,
+            fontFamily: "'Cormorant Garamond', serif",
+          }}
+        >
+          Fashion & Style
+          <br /> Consulting
+        </h1>
+        <p style={{ marginTop: 12, fontSize: "15px", opacity: 0.8 }}>
+          Helping individuals + creatives elevate
+          <br />
+          their look with intention and vibe
+        </p>
+        <p style={{ marginTop: 12, fontSize: "15px" }}>
+          CONTACT: VEJAY — consulting@vestureos.com
         </p>
       </header>
 
-      {/* Services grid */}
-      <section style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16}}>
-        <Card
-          title="Personal Styling"
+      {/* SERVICES LIST */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 60 }}>
+        {/* PERSONAL STYLING */}
+        <Service
+          title="PERSONAL STYLING"
+          desc="Curated outfit direction for your day-to-day, events, or seasonal wardrobe refresh."
           price="$75"
-          desc="Curated outfit direction for day-to-day, events, or a seasonal refresh."
+          img="/consult/Personal.JPG"
         />
-        <Card
-          title="Creative Direction"
+
+        {/* CREATIVE DIRECTION */}
+        <Service
+          title="CREATIVE DIRECTION FOR SHOOTS/PROJECTS"
+          desc="Visual concepts + style curation to bring your content ideas to life."
           price="$100"
-          desc="Visual concepts + style curation for shoots or projects."
+          img="/consult/Creative.JPG"
         />
-        <Card
-          title="Digital Session / Closet Revamp"
+
+        {/* DIGITAL STYLING */}
+        <Service
+          title="DIGITAL STYLING SESSION / CLOSET REVAMP"
+          desc="Zoom call to walk through your wardrobe, offer styling tips, and rework what you already own."
           price="$50"
-          desc="Zoom call to review your wardrobe and rework what you already own."
+          img="/consult/Digital.JPG"
         />
-        <Card
-          title="Brand / Lookbook Consulting"
+
+        {/* BRAND CONSULT */}
+        <Service
+          title="BRAND/LOOKBOOK CONSULTING"
+          desc="Styling and direction support for brands creating a campaign or visual story."
           price="$150"
-          desc="Styling + direction support for campaigns and visual stories."
+          img="/consult/Brand.JPG"
         />
-      </section>
+      </div>
 
-      {/* Actions */}
-      <section style={{marginTop: 28, display: "grid", gap: 16}}>
-        {/* Option A: direct scheduling (Calendly) */}
-        <a
-          href="https://calendly.com/YOUR-HANDLE/30min" // replace with your link
-          target="_blank"
-          rel="noreferrer"
-          style={btnPrimary}
-        >
-          Book a 30-min consult
-        </a>
-
-        {/* Option B: intake form (Formspree or Google Form) */}
-        <form
-          action="https://formspree.io/f/YOUR_FORM_ID" // replace with your Formspree form id
-          method="POST"
-          style={{display: "grid", gap: 12, marginTop: 8}}
-        >
-          <input name="name" placeholder="Your name" required style={input} />
-          <input name="email" type="email" placeholder="Email" required style={input} />
-          <input name="instagram" placeholder="Instagram (optional)" style={input} />
-          <textarea name="goals" placeholder="What are you looking for? (event, vibe, budget)" rows={4} style={input} />
-          <button type="submit" style={btnSecondary}>Join waitlist / Request styling</button>
-        </form>
-
-        {/* Optional: up-front payment links (Stripe Checkout) */}
-        <div style={{display:"flex", gap: 8, flexWrap:"wrap"}}>
-          <a href="https://buy.stripe.com/YOUR_LINK_75" target="_blank" rel="noreferrer" style={tag}>Pay $75 – Personal Styling</a>
-          <a href="https://buy.stripe.com/YOUR_LINK_100" target="_blank" rel="noreferrer" style={tag}>Pay $100 – Creative Direction</a>
-          <a href="https://buy.stripe.com/YOUR_LINK_50" target="_blank" rel="noreferrer" style={tag}>Pay $50 – Digital Session</a>
-          <a href="https://buy.stripe.com/YOUR_LINK_150" target="_blank" rel="noreferrer" style={tag}>Pay $150 – Brand Consulting</a>
-        </div>
-
-        <p style={{color:"#666", fontSize:14}}>
-          Prefer email? Contact: <a href="mailto:vejay650@gmail.com">vejay650@gmail.com</a>
-        </p>
-      </section>
+      {/* Booking Button */}
+      <div style={{ textAlign: "center", marginTop: 60 }}>
+        <Link href="/book">
+          <button
+            style={{
+              background: "#4A453E",
+              color: "#fff",
+              padding: "14px 26px",
+              fontSize: "16px",
+              borderRadius: 6,
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            Book 30-min Consult
+          </button>
+        </Link>
+      </div>
     </main>
   );
 }
 
-function Card({ title, price, desc }: {title:string; price:string; desc:string}) {
+// Reusable service card component
+function Service({
+  title,
+  desc,
+  price,
+  img,
+}: {
+  title: string;
+  desc: string;
+  price: string;
+  img: string;
+}) {
   return (
-    <div style={{border:"1px solid #eee", borderRadius:16, padding:20}}>
-      <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline"}}>
-        <h3 style={{margin:0}}>{title}</h3>
-        <strong>{price}</strong>
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "200px 1fr 100px",
+        gap: 20,
+        alignItems: "center",
+      }}
+    >
+      <Image
+        src={img}
+        width={200}
+        height={260}
+        style={{
+          objectFit: "cover",
+          borderRadius: "12px 12px 0 0",
+        }}
+        alt={title}
+      />
+      <div>
+        <h3 style={{ marginBottom: 8, fontSize: 18, fontWeight: 600 }}>
+          {title}
+        </h3>
+        <p style={{ fontSize: 15, opacity: 0.8 }}>{desc}</p>
       </div>
-      <p style={{color:"#555", marginTop:8}}>{desc}</p>
+      <p
+        style={{
+          fontSize: 26,
+          fontFamily: "'Cormorant Garamond', serif",
+        }}
+      >
+        {price}
+      </p>
     </div>
   );
 }
-
-const input: React.CSSProperties = {
-  padding: "12px 14px",
-  border: "1px solid #ccc",
-  borderRadius: 10,
-  outline: "none"
-};
-
-const btnPrimary: React.CSSProperties = {
-  display: "inline-block",
-  textAlign: "center",
-  padding: "12px 16px",
-  background: "#111",
-  color: "#fff",
-  borderRadius: 10,
-  textDecoration: "none"
-};
-
-const btnSecondary: React.CSSProperties = {
-  padding: "12px 16px",
-  background: "#111",
-  color: "#fff",
-  border: "none",
-  borderRadius: 10,
-  cursor: "pointer"
-};
-
-const tag: React.CSSProperties = {
-  display: "inline-block",
-  padding: "8px 12px",
-  borderRadius: 999,
-  background: "#f3f3f3",
-  color: "#111",
-  textDecoration: "none",
-  fontSize: 14
-};
