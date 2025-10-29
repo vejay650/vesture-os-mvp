@@ -1,5 +1,6 @@
 // pages/index.tsx
 import { useState } from "react";
+import Link from "next/link";
 
 export default function Home() {
   const [event, setEvent] = useState("");
@@ -30,7 +31,7 @@ export default function Home() {
       } else {
         setSuggestions(Array.isArray(data?.suggestions) ? data.suggestions : []);
       }
-    } catch (err: any) {
+    } catch {
       setError("Failed to reach server.");
     } finally {
       setLoading(false);
@@ -38,13 +39,24 @@ export default function Home() {
   };
 
   return (
-    <main style={{ padding: "2rem", fontFamily: "sans-serif", maxWidth: 720, margin: "0 auto" }}>
+    <main
+      style={{
+        padding: "2rem",
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        maxWidth: 720,
+        margin: "0 auto",
+      }}
+    >
       <h1 style={{ marginBottom: 8 }}>AI Stylist 👗👔</h1>
       <p style={{ marginBottom: 24 }}>
-        Enter your <strong>Event</strong>, <strong>Mood</strong>, optional <strong>Style</strong>, and <strong>Gender</strong> for 3 curated outfit ideas.
+        Enter your <strong>Event</strong>, <strong>Mood</strong>, optional{" "}
+        <strong>Style</strong>, and <strong>Gender</strong> for 3 curated outfit ideas.
       </p>
 
-      <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
+      <form
+        onSubmit={handleSubmit}
+        style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}
+      >
         <input
           placeholder="Event (e.g. wedding, dinner)"
           value={event}
@@ -86,14 +98,15 @@ export default function Home() {
             border: "none",
             cursor: "pointer",
             gridColumn: "1 / span 2",
-            marginTop: 4
+            marginTop: 4,
+            borderRadius: 8,
           }}
         >
           {loading ? "Styling..." : "Get 3 Styled Looks"}
         </button>
       </form>
 
-      {error && <p style={{ color: "red", marginTop: 16 }}>{error}</p>}
+      {error && <p style={{ color: "crimson", marginTop: 16 }}>{error}</p>}
 
       {suggestions.length > 0 && (
         <section style={{ marginTop: 24 }}>
@@ -105,6 +118,43 @@ export default function Home() {
           </ol>
         </section>
       )}
+
+      {/* Consulting CTA */}
+      <hr style={{ margin: "32px 0", border: 0, borderTop: "1px solid #eee" }} />
+      <section style={{ display: "grid", gap: 8 }}>
+        <h3 style={{ margin: 0 }}>Need 1:1 help?</h3>
+        <p style={{ margin: 0, color: "#555" }}>
+          Work directly with Vejay for personal styling, shoots, or brand lookbooks.
+        </p>
+        <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+          <Link href="/consult" legacyBehavior>
+            <a
+              style={{
+                padding: "12px 16px",
+                background: "#111",
+                color: "#fff",
+                borderRadius: 8,
+                textDecoration: "none",
+              }}
+            >
+              Book 30-min Consult
+            </a>
+          </Link>
+          <Link href="/consult" legacyBehavior>
+            <a
+              style={{
+                padding: "12px 16px",
+                background: "#f3f3f3",
+                color: "#111",
+                borderRadius: 8,
+                textDecoration: "none",
+              }}
+            >
+              View Services
+            </a>
+          </Link>
+        </div>
+      </section>
     </main>
   );
 }
