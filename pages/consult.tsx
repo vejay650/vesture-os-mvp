@@ -3,12 +3,10 @@ import Head from "next/head";
 import Image from "next/image";
 
 export default function Consult() {
-  const bg = "#EAE5DB"; // Canva background color
-
   return (
     <>
       <Head>
-        {/* Fonts: Cormorant Garamond (for titles/prices), Inter (for body) */}
+        {/* Fonts: Cormorant Garamond (titles/prices), Inter (body) */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
@@ -16,76 +14,64 @@ export default function Consult() {
           rel="stylesheet"
         />
         <title>Consulting — Vesture OS</title>
-        <meta name="description" content="Fashion & Style Consulting by Vejay — personal styling, creative direction, digital closet revamp, and brand/lookbook consulting." />
       </Head>
 
-      <main className="consult">
-        <header className="hero">
+      <main className="wrap">
+        {/* HEADER */}
+        <header className="header">
           <h1 className="title">
             Fashion & Style
             <br /> Consulting
           </h1>
 
-          <p className="sub">
-            Helping individuals + creatives elevate
-            <br />
-            their look with intention and vibe
-          </p>
+          <p className="kicker">Service Menu</p>
 
-          <p className="contact">CONTACT: VEJAY — consulting@vestureos.com</p>
+          <p className="tagline">
+            helping individuals + creatives elevate their look with intention and vibe
+          </p>
         </header>
 
-        <div className="divider" />
-
-        {/* SERVICES */}
-        <section className="services">
-          <Service
+        {/* TWO-COLUMN MENU */}
+        <section className="menu">
+          <ServiceCard
+            img="/consult/Personal.JPG"
             title="PERSONAL STYLING"
             desc="Curated outfit direction for your day-to-day, events, or seasonal wardrobe refresh."
             price="$75"
-            img="/consult/Personal.JPG"
           />
-
-          <div className="rule" />
-
-          <Service
+          <ServiceCard
+            img="/consult/Creative.JPG"
             title="CREATIVE DIRECTION FOR SHOOTS/PROJECTS"
             desc="Visual concepts + style curation to bring your content ideas to life."
             price="$100"
-            img="/consult/Creative.JPG"
           />
-
-          <div className="rule" />
-
-          <Service
+          <ServiceCard
+            img="/consult/Digital.JPG"
             title="DIGITAL STYLING SESSION / CLOSET REVAMP"
             desc="Zoom call to walk through your wardrobe, offer styling tips, and rework what you already own."
             price="$50"
-            img="/consult/Digital.JPG"
           />
-
-          <div className="rule" />
-
-          <Service
+          <ServiceCard
+            img="/consult/Brand.JPG"
             title="BRAND/LOOKBOOK CONSULTING"
             desc="Styling and direction support for brands creating a campaign or visual story."
             price="$150"
-            img="/consult/Brand.JPG"
           />
         </section>
 
+        {/* BOOK CTA */}
         <div className="ctaWrap">
           <a className="cta" href="#book">Book 30-min Consult</a>
         </div>
 
-        {/* BOOKING FORM */}
+        {/* BOOK FORM */}
         <section id="book" className="book">
           <h2>Book a 30-min Consult</h2>
           <p className="bookSub">
             Share your name, email, Instagram (optional), and what you’re looking for.
           </p>
 
-          <form className="form">
+          <form className="form" onSubmit={(e) => e.preventDefault()}>
             <input placeholder="Full name" required />
             <input type="email" placeholder="Email" required />
             <input placeholder="Instagram (optional)" />
@@ -98,83 +84,111 @@ export default function Consult() {
       <style jsx>{`
         :global(html) { scroll-behavior: smooth; }
 
-        .consult {
-          background: ${bg};
+        .wrap {
+          background: #EAE5DB;
           min-height: 100vh;
-          padding: 48px 20px 80px;
-          color: #4A453E;
+          padding: 56px 20px 88px;
           max-width: 1100px;
           margin: 0 auto;
+          color: #4A453E;
           font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         }
 
-        .hero {
-          text-align: center;
-          margin-bottom: 32px;
-        }
+        /* Header block to mirror PDF hierarchy */
+        .header { text-align: center; margin-bottom: 36px; }
         .title {
           font-family: "Cormorant Garamond", serif;
           font-weight: 400;
-          font-size: clamp(40px, 6vw, 56px);
+          font-size: clamp(42px, 6vw, 58px);
           line-height: 1.05;
           letter-spacing: 0.2px;
-          margin: 0 0 12px;
+          margin: 0 0 10px;
         }
-        .sub {
+        .kicker {
+          font-family: "Cormorant Garamond", serif;
+          font-size: clamp(16px, 2.4vw, 18px);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin: 0 0 8px;
+        }
+        .tagline {
           font-size: 15px;
-          opacity: 0.85;
+          opacity: 0.9;
           margin: 0;
         }
-        .contact {
-          margin-top: 12px;
-          font-size: 15px;
-        }
 
-        .divider {
-          height: 1px;
-          background: rgba(74, 69, 62, 0.25);
-          margin: 24px 0 32px;
-        }
-
-        .services {
+        /* Two-column menu like the PDF (cards align as a grid) */
+        .menu {
           display: grid;
-          gap: 28px;
-        }
-        .rule {
-          height: 1px;
-          background: rgba(74, 69, 62, 0.2);
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 28px 28px;
+          margin-top: 32px;
         }
 
-        .ctaWrap {
-          text-align: center;
-          margin-top: 40px;
+        .card {
+          background: #ffffffcc;
+          border: 1px solid rgba(74,69,62,0.18);
+          border-radius: 14px;
+          padding: 16px;
+          display: grid;
+          grid-template-columns: 110px 1fr 90px;
+          gap: 16px;
+          align-items: center;
+          box-shadow: 0 8px 18px rgba(0,0,0,0.06);
         }
+
+        .thumb {
+          border-radius: 12px 12px 0 0;
+          object-fit: cover;
+        }
+
+        .tTitle {
+          font-weight: 600;
+          font-size: 16px;
+          margin: 0 0 6px;
+          letter-spacing: 0.02em;
+        }
+        .tDesc {
+          margin: 0;
+          font-size: 14px;
+          opacity: 0.9;
+          line-height: 1.5;
+        }
+
+        .price {
+          font-family: "Cormorant Garamond", serif;
+          font-size: 28px;
+          text-align: right;
+          white-space: nowrap;
+        }
+
+        .ctaWrap { text-align: center; margin-top: 40px; }
         .cta {
           display: inline-block;
           background: #4A453E;
           color: #fff;
           padding: 14px 26px;
           font-size: 16px;
-          border-radius: 6px;
+          border-radius: 8px;
           text-decoration: none;
-          transition: transform 0.12s ease, opacity 0.12s ease;
+          transition: transform .12s ease, opacity .12s ease;
         }
-        .cta:hover { transform: translateY(-1px); opacity: 0.95; }
+        .cta:hover { transform: translateY(-1px); opacity: .95; }
 
         .book {
-          margin-top: 72px;
-          scroll-margin-top: 100px;
+          margin-top: 70px;
+          scroll-margin-top: 120px;
         }
         .book h2 {
           text-align: center;
           margin: 0 0 8px;
           font-family: "Cormorant Garamond", serif;
           font-weight: 500;
-          font-size: clamp(28px, 3.6vw, 34px);
+          font-size: clamp(26px, 3.4vw, 34px);
         }
         .bookSub {
           text-align: center;
-          margin: 0 0 22px;
+          margin: 0 0 20px;
           opacity: 0.85;
           font-size: 15px;
         }
@@ -187,13 +201,13 @@ export default function Consult() {
           border-radius: 12px;
           display: grid;
           gap: 12px;
-          border: 1px solid rgba(74, 69, 62, 0.15);
+          border: 1px solid rgba(74,69,62,0.15);
           box-shadow: 0 6px 18px rgba(0,0,0,0.05);
         }
         .form input, .form textarea {
           padding: 12px 14px;
           border-radius: 8px;
-          border: 1px solid rgba(74, 69, 62, 0.25);
+          border: 1px solid rgba(74,69,62,0.25);
           outline: none;
           background: #fff;
           font-size: 14px;
@@ -209,81 +223,56 @@ export default function Consult() {
           font-weight: 600;
           letter-spacing: 0.2px;
         }
-        .form button:hover { opacity: 0.95; }
+        .form button:hover { opacity: .95; }
 
-        /* Service card layout */
-        .service {
-          display: grid;
-          grid-template-columns: 220px 1fr 120px;
-          gap: 20px;
-          align-items: center;
-        }
-        .serviceTitle {
-          font-weight: 600;
-          font-size: 18px;
-          margin: 0 0 6px;
-        }
-        .serviceDesc {
-          margin: 0;
-          font-size: 15px;
-          opacity: 0.9;
-          line-height: 1.5;
-        }
-        .servicePrice {
-          font-family: "Cormorant Garamond", serif;
-          font-size: clamp(26px, 4vw, 32px);
-          text-align: right;
-        }
-        .thumb {
-          border-radius: 12px 12px 0 0;
-          object-fit: cover;
-        }
-
-        /* Responsive */
-        @media (max-width: 860px) {
-          .service {
-            grid-template-columns: 150px 1fr 90px;
+        /* Responsive adjustments */
+        @media (max-width: 980px) {
+          .menu { gap: 22px; }
+          .card {
+            grid-template-columns: 100px 1fr 80px;
           }
         }
-        @media (max-width: 680px) {
-          .service {
+        @media (max-width: 760px) {
+          .menu {
+            grid-template-columns: 1fr; /* stack like PDF mobile */
+          }
+          .card {
             grid-template-columns: 1fr;
-            gap: 12px;
+            text-align: left;
           }
-          .servicePrice { text-align: left; }
+          .price { text-align: left; margin-top: 6px; }
         }
       `}</style>
     </>
   );
 }
 
-/** Reusable service card */
-function Service({
+function ServiceCard({
+  img,
   title,
   desc,
   price,
-  img,
 }: {
+  img: string;
   title: string;
   desc: string;
   price: string;
-  img: string;
 }) {
   return (
-    <article className="service">
+    <article className="card">
       <Image
         src={img}
-        width={220}
-        height={280}
-        className="thumb"
         alt={title}
+        width={110}
+        height={140}
+        className="thumb"
         priority
       />
       <div>
-        <h3 className="serviceTitle">{title}</h3>
-        <p className="serviceDesc">{desc}</p>
+        <h3 className="tTitle">{title}</h3>
+        <p className="tDesc">{desc}</p>
       </div>
-      <div className="servicePrice">{price}</div>
+      <div className="price">{price}</div>
     </article>
   );
 }
