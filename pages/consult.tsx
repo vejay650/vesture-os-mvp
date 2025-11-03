@@ -75,22 +75,79 @@ export default function Consult() {
 
       {/* Booking Button */}
       <div style={{ textAlign: "center", marginTop: 60 }}>
-        <Link href="/book">
+        <a
+          href="#book"
+          style={{
+            background: "#4A453E",
+            color: "#fff",
+            padding: "14px 26px",
+            fontSize: "16px",
+            borderRadius: 6,
+            border: "none",
+            cursor: "pointer",
+            textDecoration: "none",
+            display: "inline-block",
+          }}
+        >
+          Book 30-min Consult
+        </a>
+      </div>
+
+      {/* === FORM SECTION === */}
+      <section id="book" style={{ marginTop: 80, scrollMarginTop: 100 }}>
+        <h2 style={{ textAlign: "center", marginBottom: 12 }}>
+          Book a 30-min Consult
+        </h2>
+        <p style={{ textAlign: "center", marginBottom: 24 }}>
+          Share your name, email, Instagram (optional), and what you’re looking for.
+        </p>
+
+        <form
+          style={{
+            display: "grid",
+            gap: 12,
+            maxWidth: 500,
+            margin: "0 auto",
+            background: "#fff",
+            padding: 20,
+            borderRadius: 10,
+          }}
+        >
+          <input
+            placeholder="Full name"
+            required
+            style={{ padding: 12, borderRadius: 8, border: "1px solid #ccc" }}
+          />
+          <input
+            type="email"
+            placeholder="Email"
+            required
+            style={{ padding: 12, borderRadius: 8, border: "1px solid #ccc" }}
+          />
+          <input
+            placeholder="Instagram (optional)"
+            style={{ padding: 12, borderRadius: 8, border: "1px solid #ccc" }}
+          />
+          <textarea
+            placeholder="What are you looking for?"
+            rows={5}
+            style={{ padding: 12, borderRadius: 8, border: "1px solid #ccc" }}
+          />
           <button
+            type="submit"
             style={{
-              background: "#4A453E",
+              padding: "12px 16px",
+              background: "#111",
               color: "#fff",
-              padding: "14px 26px",
-              fontSize: "16px",
-              borderRadius: 6,
               border: "none",
+              borderRadius: 8,
               cursor: "pointer",
             }}
           >
-            Book 30-min Consult
+            Request 30-min Consult
           </button>
-        </Link>
-      </div>
+        </form>
+      </section>
     </main>
   );
 }
