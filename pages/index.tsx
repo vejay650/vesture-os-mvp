@@ -129,16 +129,18 @@ export default function Home() {
         <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
           <Link href="/consult" legacyBehavior>
             <a
-              style={{
-                padding: "12px 16px",
-                background: "#111",
-                color: "#fff",
-                borderRadius: 8,
-                textDecoration: "none",
-              }}
-            >
-              Book 30-min Consult
-            </a>
+  href="/consult#book"
+  style={{
+    padding: "12px 16px",
+    background: "#111",
+    color: "#fff",
+    borderRadius: 8,
+    textDecoration: "none",
+  }}
+>
+  Book 30-min Consult
+</a>
+
           </Link>
           <Link href="/consult" legacyBehavior>
             <a
