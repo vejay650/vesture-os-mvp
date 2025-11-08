@@ -6,7 +6,7 @@ export default function Consult() {
   return (
     <>
       <Head>
-        {/* Fonts: serif (Caslon vibe) + sans (TT Commons vibe) */}
+        {/* Fonts */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
@@ -23,15 +23,13 @@ export default function Consult() {
             Fashion & Style
             <br /> Consulting
           </h1>
-
           <p className="kicker">Service Menu</p>
-
           <p className="tagline">
             helping individuals + creatives elevate their look with intention and vibe
           </p>
         </header>
 
-        {/* TWO EVEN COLUMNS */}
+        {/* TWO COLUMNS */}
         <section className="menuCols">
           <div className="col">
             <ServiceCard
@@ -47,7 +45,6 @@ export default function Consult() {
               price="$50"
             />
           </div>
-
           <div className="col">
             <ServiceCard
               img="/consult/Creative.JPG"
@@ -75,7 +72,6 @@ export default function Consult() {
           <p className="bookSub">
             Share your name, email, Instagram (optional), and what you’re looking for.
           </p>
-
           <form className="form" onSubmit={(e) => e.preventDefault()}>
             <input placeholder="Full name" required />
             <input type="email" placeholder="Email" required />
@@ -92,155 +88,143 @@ export default function Consult() {
         .wrap {
           background: #EAE5DB;
           min-height: 100vh;
-          padding: 56px 20px 88px;
-          max-width: 1100px;
+          padding: 60px 20px 80px;
+          max-width: 950px;
           margin: 0 auto;
           color: #4A453E;
-          font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+          font-family: Inter, sans-serif;
         }
 
-        .header { text-align: center; margin-bottom: 32px; }
+        .header {
+          text-align: center;
+          margin-bottom: 32px;
+        }
         .title {
           font-family: "Cormorant Garamond", serif;
           font-weight: 400;
-          font-size: clamp(42px, 6vw, 58px);
-          line-height: 1.05;
-          letter-spacing: 0.2px;
-          margin: 0 0 10px;
+          font-size: clamp(38px, 5.6vw, 52px);
+          line-height: 1.1;
+          margin: 0;
         }
         .kicker {
           font-family: "Cormorant Garamond", serif;
-          font-size: clamp(16px, 2.4vw, 18px);
-          letter-spacing: 0.08em;
+          font-size: 18px;
           text-transform: uppercase;
-          margin: 0 0 8px;
+          margin-top: 4px;
         }
         .tagline {
-          font-size: 15px;
+          font-size: 14px;
           opacity: 0.9;
-          margin: 0;
+          margin-top: 10px;
         }
 
-        /* Two even columns */
         .menuCols {
           display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 40px;
+          grid-template-columns: 1fr 1fr;
+          gap: 32px;
           margin-top: 40px;
         }
-
         .col {
           display: grid;
-          gap: 40px;
+          gap: 28px;
         }
 
-        /* Card with arched image top */
         .card {
-          background: #ffffffcc;
-          border: 1px solid rgba(74,69,62,0.18);
+          background: #fff;
           border-radius: 16px;
-          padding: 16px;
-          box-shadow: 0 8px 18px rgba(0,0,0,0.06);
+          padding: 14px;
+          border: 1px solid rgba(74, 69, 62, 0.1);
+          box-shadow: 0 6px 10px rgba(0, 0, 0, 0.05);
           display: flex;
           flex-direction: column;
-          align-items: stretch;
         }
 
+        /* Softer arch like Canva */
         .thumb {
           width: 100%;
-          height: 260px;
+          height: 220px;
           object-fit: cover;
-          border-radius: 140px 140px 0 0; /* arched top */
+          border-radius: 90px 90px 0 0;
           display: block;
         }
 
         .tTitle {
           font-weight: 600;
-          font-size: 16px;
-          margin: 14px 0 6px;
-          letter-spacing: 0.02em;
+          font-size: 15px;
+          margin: 12px 0 4px;
         }
-
         .tDesc {
-          margin: 0;
-          font-size: 14px;
+          font-size: 13.5px;
           opacity: 0.9;
           line-height: 1.6;
+          margin: 0;
         }
-
         .price {
           font-family: "Cormorant Garamond", serif;
-          font-size: 26px;
-          margin-top: 10px;
-          align-self: flex-end;
+          font-size: 22px;
+          margin-top: 8px;
+          text-align: right;
         }
 
         .ctaWrap { text-align: center; margin-top: 40px; }
         .cta {
-          display: inline-block;
           background: #4A453E;
           color: #fff;
-          padding: 14px 26px;
-          font-size: 16px;
-          border-radius: 8px;
+          padding: 12px 22px;
+          border-radius: 6px;
           text-decoration: none;
-          transition: transform .12s ease, opacity .12s ease;
+          font-size: 15px;
         }
-        .cta:hover { transform: translateY(-1px); opacity: .95; }
+        .cta:hover { opacity: 0.9; }
 
         .book {
-          margin-top: 70px;
-          scroll-margin-top: 120px;
+          margin-top: 60px;
         }
         .book h2 {
           text-align: center;
-          margin: 0 0 8px;
           font-family: "Cormorant Garamond", serif;
+          font-size: 26px;
           font-weight: 500;
-          font-size: clamp(26px, 3.4vw, 34px);
+          margin-bottom: 8px;
         }
         .bookSub {
           text-align: center;
-          margin: 0 0 20px;
           opacity: 0.85;
-          font-size: 15px;
+          font-size: 14px;
+          margin-bottom: 20px;
         }
 
         .form {
-          max-width: 560px;
+          max-width: 500px;
           margin: 0 auto;
-          background: #FFFFFFCC;
-          padding: 20px;
-          border-radius: 12px;
           display: grid;
-          gap: 12px;
-          border: 1px solid rgba(74,69,62,0.15);
-          box-shadow: 0 6px 18px rgba(0,0,0,0.05);
+          gap: 10px;
         }
         .form input, .form textarea {
-          padding: 12px 14px;
-          border-radius: 8px;
+          padding: 10px 12px;
           border: 1px solid rgba(74,69,62,0.25);
-          outline: none;
+          border-radius: 6px;
+          font-size: 13.5px;
           background: #fff;
-          font-size: 14px;
         }
-        .form textarea { resize: vertical; }
         .form button {
-          padding: 12px 16px;
+          padding: 10px 16px;
           background: #111;
           color: #fff;
           border: none;
-          border-radius: 8px;
+          border-radius: 6px;
+          font-size: 14px;
           cursor: pointer;
-          font-weight: 600;
-          letter-spacing: 0.2px;
         }
-        .form button:hover { opacity: .95; }
+        .form button:hover { opacity: 0.9; }
 
-        /* Responsive */
         @media (max-width: 860px) {
-          .menuCols { grid-template-columns: 1fr; }
+          .menuCols {
+            grid-template-columns: 1fr;
+          }
+          .thumb {
+            height: 200px;
+          }
         }
       `}</style>
     </>
@@ -260,7 +244,7 @@ function ServiceCard({
 }) {
   return (
     <article className="card">
-      <Image src={img} alt={title} width={900} height={600} className="thumb" priority />
+      <Image src={img} alt={title} width={600} height={400} className="thumb" priority />
       <h3 className="tTitle">{title}</h3>
       <p className="tDesc">{desc}</p>
       <div className="price">{price}</div>
