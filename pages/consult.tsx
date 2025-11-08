@@ -6,11 +6,11 @@ export default function Consult() {
   return (
     <>
       <Head>
-        {/* Fonts: Cormorant Garamond (titles/prices), Inter (body) */}
+        {/* Fonts: serif (Caslon vibe) + sans (TT Commons vibe) */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;600&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&family=Inter:wght@400;500;600&display=swap"
           rel="stylesheet"
         />
         <title>Consulting — Vesture OS</title>
@@ -31,32 +31,37 @@ export default function Consult() {
           </p>
         </header>
 
-        {/* TWO-COLUMN MENU */}
-        <section className="menu">
-          <ServiceCard
-            img="/consult/Personal.JPG"
-            title="PERSONAL STYLING"
-            desc="Curated outfit direction for your day-to-day, events, or seasonal wardrobe refresh."
-            price="$75"
-          />
-          <ServiceCard
-            img="/consult/Creative.JPG"
-            title="CREATIVE DIRECTION FOR SHOOTS/PROJECTS"
-            desc="Visual concepts + style curation to bring your content ideas to life."
-            price="$100"
-          />
-          <ServiceCard
-            img="/consult/Digital.JPG"
-            title="DIGITAL STYLING SESSION / CLOSET REVAMP"
-            desc="Zoom call to walk through your wardrobe, offer styling tips, and rework what you already own."
-            price="$50"
-          />
-          <ServiceCard
-            img="/consult/Brand.JPG"
-            title="BRAND/LOOKBOOK CONSULTING"
-            desc="Styling and direction support for brands creating a campaign or visual story."
-            price="$150"
-          />
+        {/* TWO EVEN COLUMNS */}
+        <section className="menuCols">
+          <div className="col">
+            <ServiceCard
+              img="/consult/Personal.JPG"
+              title="PERSONAL STYLING"
+              desc="Curated outfit direction for your day-to-day, events, or seasonal wardrobe refresh."
+              price="$75"
+            />
+            <ServiceCard
+              img="/consult/Digital.JPG"
+              title="DIGITAL STYLING SESSION / CLOSET REVAMP"
+              desc="Zoom call to walk through your wardrobe, offer styling tips, and rework what you already own."
+              price="$50"
+            />
+          </div>
+
+          <div className="col">
+            <ServiceCard
+              img="/consult/Creative.JPG"
+              title="CREATIVE DIRECTION FOR SHOOTS/PROJECTS"
+              desc="Visual concepts + style curation to bring your content ideas to life."
+              price="$100"
+            />
+            <ServiceCard
+              img="/consult/Brand.JPG"
+              title="BRAND/LOOKBOOK CONSULTING"
+              desc="Styling and direction support for brands creating a campaign or visual story."
+              price="$150"
+            />
+          </div>
         </section>
 
         {/* BOOK CTA */}
@@ -94,8 +99,7 @@ export default function Consult() {
           font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         }
 
-        /* Header block to mirror PDF hierarchy */
-        .header { text-align: center; margin-bottom: 36px; }
+        .header { text-align: center; margin-bottom: 32px; }
         .title {
           font-family: "Cormorant Garamond", serif;
           font-weight: 400;
@@ -117,49 +121,58 @@ export default function Consult() {
           margin: 0;
         }
 
-        /* Two-column menu like the PDF (cards align as a grid) */
-        .menu {
+        /* Two even columns */
+        .menuCols {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 28px 28px;
-          margin-top: 32px;
+          grid-template-columns: repeat(2, 1fr);
+          gap: 40px;
+          margin-top: 40px;
         }
 
+        .col {
+          display: grid;
+          gap: 40px;
+        }
+
+        /* Card with arched image top */
         .card {
           background: #ffffffcc;
           border: 1px solid rgba(74,69,62,0.18);
-          border-radius: 14px;
+          border-radius: 16px;
           padding: 16px;
-          display: grid;
-          grid-template-columns: 110px 1fr 90px;
-          gap: 16px;
-          align-items: center;
           box-shadow: 0 8px 18px rgba(0,0,0,0.06);
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
         }
 
         .thumb {
-          border-radius: 12px 12px 0 0;
+          width: 100%;
+          height: 260px;
           object-fit: cover;
+          border-radius: 140px 140px 0 0; /* arched top */
+          display: block;
         }
 
         .tTitle {
           font-weight: 600;
           font-size: 16px;
-          margin: 0 0 6px;
+          margin: 14px 0 6px;
           letter-spacing: 0.02em;
         }
+
         .tDesc {
           margin: 0;
           font-size: 14px;
           opacity: 0.9;
-          line-height: 1.5;
+          line-height: 1.6;
         }
 
         .price {
           font-family: "Cormorant Garamond", serif;
-          font-size: 28px;
-          text-align: right;
-          white-space: nowrap;
+          font-size: 26px;
+          margin-top: 10px;
+          align-self: flex-end;
         }
 
         .ctaWrap { text-align: center; margin-top: 40px; }
@@ -225,22 +238,9 @@ export default function Consult() {
         }
         .form button:hover { opacity: .95; }
 
-        /* Responsive adjustments */
-        @media (max-width: 980px) {
-          .menu { gap: 22px; }
-          .card {
-            grid-template-columns: 100px 1fr 80px;
-          }
-        }
-        @media (max-width: 760px) {
-          .menu {
-            grid-template-columns: 1fr; /* stack like PDF mobile */
-          }
-          .card {
-            grid-template-columns: 1fr;
-            text-align: left;
-          }
-          .price { text-align: left; margin-top: 6px; }
+        /* Responsive */
+        @media (max-width: 860px) {
+          .menuCols { grid-template-columns: 1fr; }
         }
       `}</style>
     </>
@@ -260,18 +260,9 @@ function ServiceCard({
 }) {
   return (
     <article className="card">
-      <Image
-        src={img}
-        alt={title}
-        width={110}
-        height={140}
-        className="thumb"
-        priority
-      />
-      <div>
-        <h3 className="tTitle">{title}</h3>
-        <p className="tDesc">{desc}</p>
-      </div>
+      <Image src={img} alt={title} width={900} height={600} className="thumb" priority />
+      <h3 className="tTitle">{title}</h3>
+      <p className="tDesc">{desc}</p>
       <div className="price">{price}</div>
     </article>
   );
