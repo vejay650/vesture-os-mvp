@@ -104,6 +104,110 @@ export default function Consult() {
             </form>
           </div>
         </section>
+              {/* Inline booking form */}
+      <section
+        id="book"
+        style={{
+          marginTop: 60,
+          paddingTop: 40,
+          borderTop: "1px solid #C8BFAF",
+          maxWidth: 520,
+          marginLeft: "auto",
+          marginRight: "auto",
+          textAlign: "left",
+        }}
+      >
+        <h2
+          style={{
+            fontFamily: "'Cormorant Garamond', serif",
+            fontSize: 26,
+            marginBottom: 12,
+            textAlign: "center",
+          }}
+        >
+          Book a 30-min Consult
+        </h2>
+        <p
+          style={{
+            fontSize: 14,
+            opacity: 0.85,
+            marginBottom: 18,
+            textAlign: "center",
+          }}
+        >
+          Share your name, email, Instagram (optional), and what you’re looking
+          for. You’ll receive a reply with available times and next steps.
+        </p>
+
+        <form
+          action="mailto:consulting@vestureos.com"
+          method="POST"
+          encType="text/plain"
+          style={{ display: "flex", flexDirection: "column", gap: 10 }}
+        >
+          <input
+            name="name"
+            placeholder="Full name"
+            required
+            style={{
+              padding: "10px 12px",
+              borderRadius: 4,
+              border: "1px solid #C8BFAF",
+              background: "rgba(255,255,255,0.8)",
+            }}
+          />
+          <input
+            name="email"
+            type="email"
+            placeholder="Email"
+            required
+            style={{
+              padding: "10px 12px",
+              borderRadius: 4,
+              border: "1px solid #C8BFAF",
+              background: "rgba(255,255,255,0.8)",
+            }}
+          />
+          <input
+            name="instagram"
+            placeholder="Instagram (optional)"
+            style={{
+              padding: "10px 12px",
+              borderRadius: 4,
+              border: "1px solid #C8BFAF",
+              background: "rgba(255,255,255,0.8)",
+            }}
+          />
+          <textarea
+            name="details"
+            placeholder="What are you looking for?"
+            rows={4}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 4,
+              border: "1px solid #C8BFAF",
+              background: "rgba(255,255,255,0.8)",
+              resize: "vertical",
+            }}
+          />
+          <button
+            type="submit"
+            style={{
+              marginTop: 8,
+              padding: "12px 16px",
+              background: "#4A453E",
+              color: "#fff",
+              border: "none",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 15,
+            }}
+          >
+            Submit Request
+          </button>
+        </form>
+      </section>
+
       </main>
 
       <style jsx>{`
