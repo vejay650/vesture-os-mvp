@@ -1,5 +1,4 @@
 // pages/index.tsx
-import Link from "next/link";
 
 export default function Home() {
   return (
@@ -15,7 +14,7 @@ export default function Home() {
         alignItems: "center",
       }}
     >
-      {/* Brand */}
+      {/* Brand + simple nav */}
       <header
         style={{
           width: "100%",
@@ -55,12 +54,18 @@ export default function Home() {
             fontSize: 13,
           }}
         >
-          <Link href="/results?mode=moodboard" style={{ textDecoration: "none", color: "#111" }}>
+          <a
+            href="/results?mode=moodboard"
+            style={{ textDecoration: "none", color: "#111" }}
+          >
             Try the moodboard
-          </Link>
-          <Link href="/consult" style={{ textDecoration: "none", color: "#111" }}>
+          </a>
+          <a
+            href="/consult"
+            style={{ textDecoration: "none", color: "#111" }}
+          >
             Consulting
-          </Link>
+          </a>
         </nav>
       </header>
 
@@ -75,10 +80,11 @@ export default function Home() {
           alignItems: "flex-start",
         }}
       >
+        {/* Left column */}
         <div>
           <h1
             style={{
-              fontSize: "34px",
+              fontSize: 34,
               lineHeight: 1.15,
               fontWeight: 500,
               margin: 0,
@@ -95,12 +101,12 @@ export default function Home() {
             }}
           >
             Type a vibe, event, or reference. Vesture OS pulls looks from your
-            preferred retailers into a clean outfit moodboard. When you&apos;re
+            configured retailers into a clean outfit moodboard. When you&apos;re
             ready for deeper direction, explore the Fashion &amp; Style
             Consulting menu.
           </p>
 
-          {/* Primary CTA buttons */}
+          {/* CTA buttons */}
           <div
             style={{
               display: "flex",
@@ -109,40 +115,41 @@ export default function Home() {
               marginTop: 26,
             }}
           >
-            <Link href="/results?mode=moodboard">
-              <button
-                style={{
-                  padding: "11px 20px",
-                  borderRadius: 999,
-                  border: "none",
-                  background: "#111",
-                  color: "#fff",
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
-              >
-                Try the Outfit Moodboard
-              </button>
-            </Link>
+            <a
+              href="/results?mode=moodboard"
+              style={{
+                padding: "11px 20px",
+                borderRadius: 999,
+                border: "none",
+                background: "#111",
+                color: "#fff",
+                fontSize: 13,
+                cursor: "pointer",
+                textDecoration: "none",
+                display: "inline-block",
+              }}
+            >
+              Try the Outfit Moodboard
+            </a>
 
-            <Link href="/consult">
-              <button
-                style={{
-                  padding: "11px 18px",
-                  borderRadius: 999,
-                  border: "1px solid #111",
-                  background: "transparent",
-                  color: "#111",
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
-              >
-                View Consulting Menu
-              </button>
-            </Link>
+            <a
+              href="/consult"
+              style={{
+                padding: "11px 18px",
+                borderRadius: 999,
+                border: "1px solid #111",
+                background: "transparent",
+                color: "#111",
+                fontSize: 13,
+                cursor: "pointer",
+                textDecoration: "none",
+                display: "inline-block",
+              }}
+            >
+              View Consulting Menu
+            </a>
           </div>
 
-          {/* Social proof-ish line */}
           <p
             style={{
               marginTop: 14,
@@ -156,7 +163,7 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Right column: simple explainer */}
+        {/* Right column explainer */}
         <div
           style={{
             padding: "18px 18px 16px",
@@ -185,15 +192,13 @@ export default function Home() {
               lineHeight: 1.6,
             }}
           >
-            <li>Click &ldquo;Try the Outfit Moodboard&rdquo;.</li>
+            <li>Click “Try the Outfit Moodboard”.</li>
             <li>
-              Enter a simple phrase like{" "}
-              <em>&ldquo;minimal gallery opening&rdquo;</em> or{" "}
-              <em>&ldquo;japanese workwear street&rdquo;</em>.
+              Enter a phrase like <em>“minimal dinner unisex”</em> or{" "}
+              <em>“oversized japanese streetwear”</em>.
             </li>
             <li>
-              We surface curated image tiles from your configured retailers so
-              people can feel the look.
+              We surface a tight grid of looks from your selected retailers.
             </li>
           </ol>
           <p
@@ -202,8 +207,8 @@ export default function Home() {
               opacity: 0.75,
             }}
           >
-            For 1:1 styling, brand visuals, and lookbooks, head to the
-            Consulting page and submit the request form.
+            For 1:1 styling, shoots, or brand visuals, go to the Consulting
+            page and submit the request form.
           </p>
         </div>
       </section>
