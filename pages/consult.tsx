@@ -16,7 +16,7 @@ export default function Consult() {
       </Head>
 
       <main className="page">
-        {/* HEADER BLOCK */}
+        {/* HEADER */}
         <header className="header">
           <div className="header-col">
             <div className="vertical-label">SERVICES MENU</div>
@@ -32,14 +32,12 @@ export default function Consult() {
             </p>
           </div>
 
-          <div className="header-col right">
-            {/* empty on purpose for balance (like pdf) */}
-          </div>
+          <div className="header-col right" />
         </header>
 
         <div className="divider" />
 
-        {/* SERVICES LIST (STACKED LIKE PDF) */}
+        {/* SERVICES LIST */}
         <section className="services">
           <ServiceRow
             img="/consult/Personal.JPG"
@@ -67,147 +65,118 @@ export default function Consult() {
           />
         </section>
 
-        {/* CTA + FORM */}
+        {/* CTA → scroll to form */}
         <section className="book">
-          <button
-            className="book-btn"
-            onClick={() => {
-              const el = document.getElementById("consult-form");
-              if (el) el.scrollIntoView({ behavior: "smooth" });
+          <a href="#book">
+            <button className="book-btn">
+              Book 30-min Consult
+            </button>
+          </a>
+        </section>
+
+        {/* SINGLE FORM (ANCHOR TARGET) */}
+        <section
+          id="book"
+          style={{
+            marginTop: 60,
+            paddingTop: 40,
+            borderTop: "1px solid #C8BFAF",
+            maxWidth: 520,
+            marginLeft: "auto",
+            marginRight: "auto",
+            textAlign: "left",
+          }}
+        >
+          <h2
+            style={{
+              fontFamily: "'Cormorant Garamond', serif",
+              fontSize: 26,
+              marginBottom: 12,
+              textAlign: "center",
             }}
           >
-            Book 30-min Consult
-          </button>
+            Book a 30-min Consult
+          </h2>
+          <p
+            style={{
+              fontSize: 14,
+              opacity: 0.85,
+              marginBottom: 18,
+              textAlign: "center",
+            }}
+          >
+            Share your name, email, Instagram (optional), and what you’re looking
+            for. You’ll receive a reply with available times and next steps.
+          </p>
 
-          <div id="consult-form" className="form-wrap">
-            <h2>Book a 30-min Consult</h2>
-            <p className="form-sub">
-              Share your name, email, Instagram (optional), and what you’re looking for.
-            </p>
-            <form
-              className="form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                alert(
-                  "For now this sends your details nowhere. Hook it up to Formspree / Resend / your email when you’re ready."
-                );
+          <form
+            action="mailto:consulting@vestureos.com"
+            method="POST"
+            encType="text/plain"
+            style={{ display: "flex", flexDirection: "column", gap: 10 }}
+          >
+            <input
+              name="name"
+              placeholder="Full name"
+              required
+              style={{
+                padding: "10px 12px",
+                borderRadius: 4,
+                border: "1px solid #C8BFAF",
+                background: "rgba(255,255,255,0.8)",
+              }}
+            />
+            <input
+              name="email"
+              type="email"
+              placeholder="Email"
+              required
+              style={{
+                padding: "10px 12px",
+                borderRadius: 4,
+                border: "1px solid #C8BFAF",
+                background: "rgba(255,255,255,0.8)",
+              }}
+            />
+            <input
+              name="instagram"
+              placeholder="Instagram (optional)"
+              style={{
+                padding: "10px 12px",
+                borderRadius: 4,
+                border: "1px solid #C8BFAF",
+                background: "rgba(255,255,255,0.8)",
+              }}
+            />
+            <textarea
+              name="details"
+              placeholder="What are you looking for?"
+              rows={4}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 4,
+                border: "1px solid #C8BFAF",
+                background: "rgba(255,255,255,0.8)",
+                resize: "vertical",
+              }}
+            />
+            <button
+              type="submit"
+              style={{
+                marginTop: 8,
+                padding: "12px 16px",
+                background: "#4A453E",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 15,
               }}
             >
-              <input placeholder="Full name" required />
-              <input type="email" placeholder="Email" required />
-              <input placeholder="Instagram (optional)" />
-              <textarea
-                rows={5}
-                placeholder="What are you looking for?"
-              />
-              <button type="submit">Request 30-min Consult</button>
-            </form>
-          </div>
+              Submit Request
+            </button>
+          </form>
         </section>
-              {/* Inline booking form */}
-      <section
-        id="book"
-        style={{
-          marginTop: 60,
-          paddingTop: 40,
-          borderTop: "1px solid #C8BFAF",
-          maxWidth: 520,
-          marginLeft: "auto",
-          marginRight: "auto",
-          textAlign: "left",
-        }}
-      >
-        <h2
-          style={{
-            fontFamily: "'Cormorant Garamond', serif",
-            fontSize: 26,
-            marginBottom: 12,
-            textAlign: "center",
-          }}
-        >
-          Book a 30-min Consult
-        </h2>
-        <p
-          style={{
-            fontSize: 14,
-            opacity: 0.85,
-            marginBottom: 18,
-            textAlign: "center",
-          }}
-        >
-          Share your name, email, Instagram (optional), and what you’re looking
-          for. You’ll receive a reply with available times and next steps.
-        </p>
-
-        <form
-          action="mailto:consulting@vestureos.com"
-          method="POST"
-          encType="text/plain"
-          style={{ display: "flex", flexDirection: "column", gap: 10 }}
-        >
-          <input
-            name="name"
-            placeholder="Full name"
-            required
-            style={{
-              padding: "10px 12px",
-              borderRadius: 4,
-              border: "1px solid #C8BFAF",
-              background: "rgba(255,255,255,0.8)",
-            }}
-          />
-          <input
-            name="email"
-            type="email"
-            placeholder="Email"
-            required
-            style={{
-              padding: "10px 12px",
-              borderRadius: 4,
-              border: "1px solid #C8BFAF",
-              background: "rgba(255,255,255,0.8)",
-            }}
-          />
-          <input
-            name="instagram"
-            placeholder="Instagram (optional)"
-            style={{
-              padding: "10px 12px",
-              borderRadius: 4,
-              border: "1px solid #C8BFAF",
-              background: "rgba(255,255,255,0.8)",
-            }}
-          />
-          <textarea
-            name="details"
-            placeholder="What are you looking for?"
-            rows={4}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 4,
-              border: "1px solid #C8BFAF",
-              background: "rgba(255,255,255,0.8)",
-              resize: "vertical",
-            }}
-          />
-          <button
-            type="submit"
-            style={{
-              marginTop: 8,
-              padding: "12px 16px",
-              background: "#4A453E",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 15,
-            }}
-          >
-            Submit Request
-          </button>
-        </form>
-      </section>
-
       </main>
 
       <style jsx>{`
@@ -226,7 +195,6 @@ export default function Consult() {
             sans-serif;
         }
 
-        /* HEADER */
         .header {
           display: grid;
           grid-template-columns: 80px 1fr 80px;
@@ -272,7 +240,6 @@ export default function Consult() {
           margin: 14px 0 26px;
         }
 
-        /* SERVICES */
         .services {
           display: flex;
           flex-direction: column;
@@ -290,7 +257,7 @@ export default function Consult() {
           width: 160px;
           height: 190px;
           overflow: hidden;
-          border-radius: 80px 80px 0 0; /* arched top */
+          border-radius: 80px 80px 0 0;
           background: #d6cec0;
         }
 
@@ -320,7 +287,6 @@ export default function Consult() {
           justify-self: flex-end;
         }
 
-        /* CTA + FORM */
         .book {
           margin-top: 42px;
           text-align: center;
@@ -340,57 +306,6 @@ export default function Consult() {
           opacity: 0.9;
         }
 
-        .form-wrap {
-          margin-top: 30px;
-        }
-
-        .form-wrap h2 {
-          font-family: "Cormorant Garamond", serif;
-          font-weight: 500;
-          font-size: 22px;
-          margin: 0 0 4px;
-        }
-
-        .form-sub {
-          font-size: 13px;
-          opacity: 0.85;
-          margin-bottom: 16px;
-        }
-
-        .form {
-          max-width: 460px;
-          margin: 0 auto;
-          display: grid;
-          gap: 10px;
-          text-align: left;
-        }
-
-        .form input,
-        .form textarea {
-          padding: 9px 11px;
-          font-size: 13px;
-          border-radius: 5px;
-          border: 1px solid rgba(74, 69, 62, 0.35);
-          background: #f7f4ee;
-        }
-
-        .form button {
-          margin-top: 4px;
-          padding: 9px 16px;
-          border-radius: 5px;
-          border: none;
-          background: #111;
-          color: #fff;
-          font-size: 13px;
-          cursor: pointer;
-          justify-self: flex-start;
-        }
-
-        .form button:hover {
-          opacity: 0.92;
-        }
-
-        /* Mobile */
         @media (max-width: 720px) {
           .header {
             grid-template-columns: 40px 1fr 40px;
