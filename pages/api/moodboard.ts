@@ -4,22 +4,26 @@ import type { NextApiRequest, NextApiResponse } from "next";
 /** ---------- Types ---------- */
 type ImageResult = {
   imageUrl: string;
+  thumbnailUrl?: string;
   sourceUrl: string;
   title: string;
-  thumbnailUrl?: string;
   provider?: string; // normalized host
+  score?: number;
+  query?: string;
 };
 
 type Candidate = {
   title: string;
-  link: string; // product/page url
-  img: string;  // image url
-  host: string; // normalized host
+  link: string;     // product/page url
+  img: string;      // image url
+  thumb?: string;   // thumbnail url
+  host: string;     // normalized host
+  query: string;    // which query produced it
 };
 
-/** ---------- Small helpers ---------- */
 const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
 const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
+
 const containsAny = (hay: string, needles: string[]) => {
   const lc = hay.toLowerCase();
   for (let i = 0; i < needles.length; i++) {
@@ -28,13 +32,13 @@ const containsAny = (hay: string, needles: string[]) => {
   return false;
 };
 
-/** ---------- Heuristics / vocab ---------- */
+/** ---------- Heuristics ---------- */
 const EXCLUDE_INURL = [
   "/kids/", "/girls/", "/boys/", "/baby/",
   "/help/", "/blog/", "/story/", "/stories/", "/press/",
   "/account/", "/privacy", "/terms",
   "size-guide", "size_guide", "guide", "policy",
-  "/lookbook"
+  "/lookbook", "/editorial", "/review", "/reviews"
 ];
 
 const EXCLUDE_TERMS = [
@@ -48,30 +52,101 @@ const BLOCKED_DOMAINS = [
   "wikipedia."
 ];
 
-/** ---------- Build the text query we send to CSE ---------- */
-function buildTextQuery(opts: {
+// These hosts frequently block hotlinking (common blank images).
+// We'll still return them, but we strongly prefer thumbnails when present.
+const HOTLINK_RISK = [
+  "louisvuitton.com",
+  "bottegaveneta.com",
+  "versace.com",
+  "moncler.com",
+];
+
+/** ---------- Prompt → item-level query generation ---------- */
+/**
+ * We can still accept full sentences, but we convert to product-like queries.
+ * This keeps relevance tight and reduces randomness.
+ */
+function buildItemQueries(opts: {
+  prompt?: string;
   event?: string;
   mood?: string;
   style?: string;
   gender?: string;
-  brands?: string[];
 }) {
-  const { event, mood, style, gender, brands } = opts || {};
-  const parts = [event, mood, style, gender].filter(Boolean) as string[];
-  let q = (parts.join(" ") || "outfit").trim();
-  if (brands && brands.length) q += " " + brands.join(" ");
-  // nudge toward commercial results; avoid editorial
-  q += " outfit -pinterest -review -editorial";
-  return q;
+  const prompt = clean(opts.prompt);
+  const event = clean(opts.event);
+  const mood = clean(opts.mood);
+  const style = clean(opts.style);
+  const gender = clean(opts.gender);
+
+  const base = (prompt || [event, mood, style, gender].filter(Boolean).join(" ")).trim();
+
+  // Minimal “intent” detection
+  const lc = base.toLowerCase();
+  const isNightOut = /(\bdate\b|\bdate night\b|\bnight out\b|\bevening\b|\bdinner\b|\bdrinks\b|\bparty\b)/i.test(lc);
+  const isGame = /(\bgame\b|\bstadium\b|\barena\b|\bcourtside\b|\bmatch\b)/i.test(lc);
+  const isStreet = /(\bstreetwear\b|\burban\b|\bcasual\b)/i.test(lc);
+  const isMinimal = /(\bminimal\b|\bclean\b|\bsimple\b)/i.test(lc);
+
+  const g = gender.toLowerCase();
+  const genderHint =
+    g.includes("women") || g.includes("female") ? "women" :
+    g.includes("men") || g.includes("male") ? "men" :
+    "unisex";
+
+  // Build a compact style hint for the queries
+  const vibeBits: string[] = [];
+  if (isMinimal) vibeBits.push("minimal", "clean");
+  if (isStreet) vibeBits.push("streetwear");
+  if (isNightOut) vibeBits.push("evening");
+  if (isGame) vibeBits.push("comfortable");
+
+  const vibe = vibeBits.slice(0, 3).join(" ");
+
+  // Template query sets (tight + product-like)
+  // These generate items the UI can display as a “look”
+  const queries: string[] = [];
+
+  if (isNightOut && isGame) {
+    // Game date night = elevated but comfortable
+    queries.push(
+      `black fitted turtleneck ${genderHint}`,
+      `tailored trousers dark ${genderHint}`,
+      `leather jacket ${genderHint}`,
+      `clean white leather sneakers ${genderHint}`,
+      `small shoulder bag ${genderHint}`,
+      `minimal chain necklace ${genderHint}`
+    );
+  } else if (isNightOut) {
+    queries.push(
+      `blazer tailored ${genderHint}`,
+      `silk satin top ${genderHint}`,
+      `straight leg jeans dark ${genderHint}`,
+      `ankle boots leather ${genderHint}`,
+      `small bag ${genderHint}`,
+      `minimal jewelry ${genderHint}`
+    );
+  } else {
+    // General fallback outfit set
+    queries.push(
+      `clean knit top ${genderHint}`,
+      `straight leg jeans ${genderHint}`,
+      `tailored trousers ${genderHint}`,
+      `clean sneakers ${genderHint}`,
+      `jacket ${genderHint}`
+    );
+  }
+
+  // Add vibe context lightly (don’t overload queries)
+  // e.g., “minimal clean” helps without making it too broad
+  const enriched = queries.map(q => (vibe ? `${q} ${vibe}` : q).trim());
+
+  // Deduplicate
+  return Array.from(new Set(enriched));
 }
 
-/** ---------- Google CSE (image) search with pagination ---------- */
-async function googleImageSearch(
-  q: string,
-  count: number,
-  key: string,
-  cx: string
-): Promise<any[]> {
+/** ---------- Google CSE (image) search ---------- */
+async function googleImageSearch(q: string, count: number, key: string, cx: string): Promise<any[]> {
   const results: any[] = [];
   let start = 1;
 
@@ -83,13 +158,14 @@ async function googleImageSearch(
     url.searchParams.set("start", String(start));
     url.searchParams.set("key", key);
     url.searchParams.set("cx", cx);
-    // image hints
+
+    // Image hints
     url.searchParams.set("imgType", "photo");
     url.searchParams.set("imgSize", "large");
     url.searchParams.set("safe", "active");
 
     const res = await fetch(url.toString());
-    if (!res.ok) break; // if rate-limited or quota, bail with what we have
+    if (!res.ok) break;
     const data = await res.json();
     const items = (data?.items || []) as any[];
     if (!items.length) break;
@@ -101,28 +177,79 @@ async function googleImageSearch(
   return results;
 }
 
+/** ---------- Scoring ---------- */
+function isProductish(url: string) {
+  const u = (url || "").toLowerCase();
+  return (
+    u.includes("/product") ||
+    u.includes("/products") ||
+    u.includes("/p/") ||
+    u.includes("/item/") ||
+    u.includes("/shop/") ||
+    u.includes("/dp/") ||
+    u.includes("/sku/") ||
+    u.includes("/collection") ||
+    u.includes("/collections") ||
+    u.includes("/catalog")
+  );
+}
+
+function scoreCandidate(c: Candidate, tokens: string[]) {
+  const text = (c.title + " " + c.link).toLowerCase();
+  let s = 0;
+
+  if (isProductish(c.link)) s += 8;
+
+  // token relevance (soft)
+  let hits = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    if (text.includes(tokens[i])) hits++;
+  }
+  s += hits * 2;
+
+  // Farfetch soft penalty so it doesn’t dominate
+  if (c.host.includes("farfetch")) s -= 2;
+
+  return s;
+}
+
+function tokenizeQuery(q: string) {
+  // Simple tokenization: keep useful words only
+  const stop = new Set(["the","and","or","for","with","outfit","women","men","unisex","evening","comfortable"]);
+  return q
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .map(t => t.replace(/[^a-z0-9\-]/g, ""))
+    .filter(t => t.length >= 3 && !stop.has(t));
+}
+
 /** ---------- API Handler ---------- */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    // Support POST (body) and GET (query)
     const isPost = req.method === "POST";
     const bodyOrQuery: any = isPost ? (req.body || {}) : (req.query || {});
 
+    // Inputs
+    const prompt = clean(bodyOrQuery.prompt);
     const event = clean(bodyOrQuery.event);
     const mood = clean(bodyOrQuery.mood);
     const style = clean(bodyOrQuery.style);
     const gender = clean(bodyOrQuery.gender);
-    const brands = Array.isArray(bodyOrQuery.brands) ? bodyOrQuery.brands : undefined;
-    const qParam = clean(Array.isArray(bodyOrQuery.q) ? bodyOrQuery.q[0] : bodyOrQuery.q);
+
     const countRaw = Number(bodyOrQuery.count);
     const desired = Math.min(Math.max(isFinite(countRaw) && countRaw > 0 ? countRaw : 18, 6), 36);
+
+    // Optional override: queries[]
+    const queriesOverride = Array.isArray(bodyOrQuery.queries)
+      ? bodyOrQuery.queries.map(clean).filter(Boolean)
+      : undefined;
 
     // ENV
     const key = clean(process.env.GOOGLE_CSE_KEY);
     const cx = clean(process.env.GOOGLE_CSE_ID);
     if (!key || !cx) {
       return res.status(500).json({
-        error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID. Add them in Vercel → Settings → Environment Variables."
+        error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID."
       });
     }
 
@@ -132,289 +259,186 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .split(",")
       .map((s) => normHost(s))
       .filter(Boolean);
+
     if (siteList.length === 0) {
       return res.status(500).json({ error: "No retailer sites configured (RETAILER_SITES)" });
     }
 
-    // Build text query
-    const baseQ = qParam;
-    const textQuery = baseQ
-      ? `${baseQ} outfit`
-      : buildTextQuery({ event, mood, style, gender, brands });
-
-    // Add site filters
-    // (avoid [...new Set] for ES5; Set is fine, but we iterate via Array.from)
     const siteSet = new Set<string>();
     for (let i = 0; i < siteList.length; i++) siteSet.add(siteList[i]);
 
-    let siteFilter = "";
-    {
-      const arr = Array.from(siteSet);
-      const pieces: string[] = [];
-      for (let i = 0; i < arr.length; i++) {
-        pieces.push(`site:${arr[i]}`);
-      }
-      siteFilter = pieces.join(" OR ");
-    }
+    // Build site filter string
+    const siteFilter = Array.from(siteSet).map(s => `site:${s}`).join(" OR ");
 
-    const finalQuery = `${textQuery} ${siteFilter}`.trim();
+    // Build item-level queries
+    const queries = (queriesOverride && queriesOverride.length)
+      ? Array.from(new Set(queriesOverride)).slice(0, 10)
+      : buildItemQueries({ prompt, event, mood, style, gender }).slice(0, 10);
 
-    // Query CSE (fetch extra so we can filter hard)
-    const items = await googleImageSearch(finalQuery, desired * 3, key, cx);
-
-    // Map to candidates
-    let candidates: Candidate[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const img = clean(it?.link); // image url
-      const ctx = clean(it?.image?.contextLink || it?.image?.context || it?.image?.source || it?.displayLink || "");
-      const link = clean(ctx || it?.link); // page url (prefer context)
-      const title = clean(it?.title || "");
-      if (!img || !link) continue;
-      try {
-        const host = normHost(new URL(link).hostname);
-        candidates.push({ title, link, img, host });
-      } catch {
-        // ignore malformed
-      }
-    }
-
-    /** =========================
-     *  STRICT FILTER + RANK + DEDUPE  (RELAXED)
-     *  ========================= */
-
-    // A) Domain + noise filters
-    let filtered = candidates.filter((c) => {
-      if (!c.img || !c.link) return false;
-      for (let b = 0; b < BLOCKED_DOMAINS.length; b++) {
-        if (c.host.includes(BLOCKED_DOMAINS[b])) return false;
-      }
-      // must be in whitelist (allow subdomains)
-      let allowed = false;
-      const arr = Array.from(siteSet);
-      for (let i = 0; i < arr.length; i++) {
-        const s = arr[i];
-        if (c.host === s || c.host.endsWith(s)) {
-          allowed = true;
-          break;
-        }
-      }
-      if (!allowed) return false;
-
-      const url = (c.link + "").toLowerCase();
-      const title = (c.title + "").toLowerCase();
-      if (containsAny(url, EXCLUDE_INURL)) return false;
-      if (containsAny(title, EXCLUDE_TERMS)) return false;
-
-      return true;
-    });
+    // We want a consistent number per query
+    const perQuery = Math.max(6, Math.ceil(desired / Math.min(queries.length, 6)));
 
     const debug: any = {
-      totalItems: candidates.length,
-      afterDomainAndNoiseFilter: filtered.length,
+      desired,
+      queries,
+      perQuery,
+      retailers: Array.from(siteSet),
     };
 
-    // B) Token extraction & synonyms for simple phrases
-    const phrase = (baseQ || `${event || ""} ${mood || ""} ${style || ""} ${gender || ""}`).trim().toLowerCase();
+    // Fetch candidates per query
+    let candidates: Candidate[] = [];
+    for (let qi = 0; qi < queries.length; qi++) {
+      const q = queries[qi];
 
-    const expansions: Record<string, string[]> = {
-      oversized: ["oversized", "baggy", "wide", "loose", "relaxed", "boxy"],
-      minimal: ["minimal", "clean", "simple"],
-      streetwear: ["streetwear", "street", "casual", "urban"],
-      workwear: ["workwear", "utility", "military", "cargo"],
-      loafers: ["loafer", "loafers", "penny loafer"],
-      sneakers: ["sneaker", "sneakers", "trainer", "trainers"],
-      heels: ["heel", "heels", "stiletto"],
-      dress: ["dress", "slip dress"],
-      blazer: ["blazer", "tailored", "suit"],
-      jeans: ["jeans", "denim"],
-      pants: ["pant", "pants", "trouser", "trousers"],
-      skirt: ["skirt", "midi skirt", "mini skirt"],
-      jacket: ["jacket", "coat", "parka", "puffer"],
-      top: ["top", "tee", "t-shirt", "shirt", "blouse", "knit"],
-      bag: ["bag", "tote", "shoulder bag", "crossbody"],
-      nightout: ["night out", "evening", "date night", "party"],
-    };
+      // Nudge towards product pages; avoid editorial
+      const finalQuery = `${q} -pinterest -editorial -review (${siteFilter})`.trim();
 
-    const colors = ["red","black","white","cream","beige","brown","blue","navy","green","grey","gray","pink","olive","khaki"];
+      const items = await googleImageSearch(finalQuery, perQuery * 3, key, cx);
 
-    const tokenSet = new Set<string>();
-    for (const key in expansions) {
-      if (Object.prototype.hasOwnProperty.call(expansions, key)) {
-        if (phrase.includes(key)) {
-          const arr = expansions[key];
-          for (let i = 0; i < arr.length; i++) tokenSet.add(arr[i]);
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const img = clean(it?.link);
+        const thumb = clean(it?.image?.thumbnailLink || "");
+        const ctx = clean(it?.image?.contextLink || it?.image?.context || it?.displayLink || "");
+        const link = clean(ctx); // page url
+        const title = clean(it?.title || "");
+        if (!img || !link) continue;
+
+        try {
+          const host = normHost(new URL(link).hostname);
+
+          // Basic domain blocks
+          let blocked = false;
+          for (let b = 0; b < BLOCKED_DOMAINS.length; b++) {
+            if (host.includes(BLOCKED_DOMAINS[b])) { blocked = true; break; }
+          }
+          if (blocked) continue;
+
+          // Must be allowlisted (allow subdomains)
+          let allowed = false;
+          const arr = Array.from(siteSet);
+          for (let k = 0; k < arr.length; k++) {
+            const s = arr[k];
+            if (host === s || host.endsWith(s)) { allowed = true; break; }
+          }
+          if (!allowed) continue;
+
+          const urlLc = link.toLowerCase();
+          const titleLc = title.toLowerCase();
+          if (containsAny(urlLc, EXCLUDE_INURL)) continue;
+          if (containsAny(titleLc, EXCLUDE_TERMS)) continue;
+
+          candidates.push({ title, link, img, thumb, host, query: q });
+        } catch {
+          // ignore malformed
         }
       }
     }
-    for (let i = 0; i < colors.length; i++) {
-      const c = colors[i];
-      if (phrase.includes(c)) tokenSet.add(c);
-    }
-    const TOKENS = Array.from(tokenSet);
 
-    const isNightOut = /(\bnight\s*out\b|\bevening\b|\bdate\s*night\b|\bparty\b)/i.test(phrase);
+    debug.totalCandidates = candidates.length;
 
-    const fullTextOf = (c: Candidate) => (c.title + " " + c.link).toLowerCase();
-    const passAll = (c: Candidate) => {
-      if (TOKENS.length === 0) return true;
-      const t = fullTextOf(c);
-      for (let i = 0; i < TOKENS.length; i++) {
-        if (!t.includes(TOKENS[i])) return false;
-      }
-      return true;
-    };
-    const passSome = (c: Candidate) => {
-      if (TOKENS.length === 0) return true;
-      const t = fullTextOf(c);
-      for (let i = 0; i < TOKENS.length; i++) {
-        if (t.includes(TOKENS[i])) return true;
-      }
-      return false;
-    };
+    // Score + rank (query-aware)
+    const ranked = candidates
+      .map(c => {
+        const tokens = tokenizeQuery(c.query);
+        const s = scoreCandidate(c, tokens);
+        return { ...c, _score: s };
+      })
+      .sort((a: any, b: any) => (b._score || 0) - (a._score || 0));
 
-    // strict → soft → none
-    let tokenStage = "all";
-    let tokenFiltered = filtered.filter(passAll);
+    // Diversification:
+    // - cap per domain
+    // - cap farfetch specifically
+    const perDomainCap = desired <= 12 ? 2 : 3;
+    const farfetchCap = desired <= 12 ? 2 : 3;
 
-    if (tokenFiltered.length < Math.min(12, desired)) {
-      tokenStage = "some";
-      tokenFiltered = filtered.filter(passSome);
-    }
-    if (tokenFiltered.length < Math.min(8, desired)) {
-      tokenStage = "none";
-      tokenFiltered = filtered.slice(0);
-    }
-
-    debug.afterTokenFilter = tokenFiltered.length;
-    debug.tokenStage = tokenStage;
-
-    // C) Product-ish preference with graceful fallback
-    const productish = (c: Candidate) => {
-      const u = (c.link || "").toLowerCase();
-      return (
-        u.includes("/product") ||
-        u.includes("/products") ||
-        u.includes("/p/") ||
-        u.includes("/item/") ||
-        u.includes("/shop/") ||
-        u.includes("/dp/") ||
-        u.includes("/sku/") ||
-        u.includes("/collection") ||
-        u.includes("/collections") ||
-        u.includes("/catalog")
-      );
-    };
-
-    let ranked = tokenFiltered.filter(productish);
-    if (ranked.length < Math.max(6, Math.round(desired * 0.5))) {
-      ranked = tokenFiltered;
-    }
-
-    const fashionScore = (c: Candidate): number => {
-      const title = (c.title || "").toLowerCase();
-      const url = (c.link || "").toLowerCase();
-      const text = title + " " + url;
-      let s = 0;
-
-      if (productish(c)) s += 8;
-
-      for (let i = 0; i < TOKENS.length; i++) {
-        const tok = TOKENS[i];
-        if (tok && text.includes(tok)) s += 3;
-      }
-
-      if (isNightOut) {
-        if (/(hoodie|sweatshirt|sweatpants|jogger|tracksuit|fleece)/.test(text)) s -= 6;
-        if (/(heel|stiletto|silk|satin|blazer|dress|tailor|slip)/.test(text)) s += 4;
-      }
-
-      if (/(ssense|farfetch|matchesfashion|mrporter|endclothing|totokaelo)/.test(c.host)) s += 2;
-
-      return s;
-    };
-
-    ranked.sort((a, b) => fashionScore(b) - fashionScore(a));
-
-    // --- Domain cap to diversify tiles ---
-    const perDomainCap = 3;
     const domainCounts = new Map<string, number>();
-    const diversified: Candidate[] = [];
-    for (let i = 0; i < ranked.length; i++) {
-      const c = ranked[i];
-      const count = domainCounts.get(c.host) || 0;
-      if (count >= perDomainCap) continue;
-      domainCounts.set(c.host, count + 1);
-      diversified.push(c);
-    }
-    filtered = diversified;
+    let farfetchCount = 0;
 
-    // D) Dedupe by page path + image filename
+    // Dedupe keys
     const seen = new Set<string>();
     const out: ImageResult[] = [];
-    for (let i = 0; i < filtered.length; i++) {
-      const c = filtered[i];
 
-      let pageKey = clean(c.link);
+    for (let i = 0; i < ranked.length; i++) {
+      const c: any = ranked[i];
+
+      // Domain caps
+      const count = domainCounts.get(c.host) || 0;
+      if (count >= perDomainCap) continue;
+
+      if (c.host.includes("farfetch")) {
+        if (farfetchCount >= farfetchCap) continue;
+      }
+
+      // Dedupe by page path + image filename
+      let pageKey = c.link;
       try {
         const u = new URL(c.link);
         pageKey = `${normHost(u.hostname)}${u.pathname.replace(/\/$/, "")}`;
-      } catch {
-        // ignore
-      }
+      } catch {}
 
       let imgKey = c.img;
       try {
         const u = new URL(c.img);
         const fn = (u.pathname.split("/").pop() || u.pathname).toLowerCase();
         imgKey = fn.replace(/\.(webp|jpg|jpeg|png|gif|avif)$/, "");
-      } catch {
-        // ignore
-      }
+      } catch {}
 
       const k = `${pageKey}::${imgKey}`;
       if (seen.has(k)) continue;
       seen.add(k);
 
+      // Hotlink mitigation: prefer thumbnail for risky domains
+      const risky = HOTLINK_RISK.some(d => c.host.endsWith(d));
+      const imageUrl = risky && c.thumb ? c.thumb : c.img;
+
+      domainCounts.set(c.host, count + 1);
+      if (c.host.includes("farfetch")) farfetchCount++;
+
       out.push({
-        imageUrl: c.img,
+        imageUrl,
+        thumbnailUrl: c.thumb || undefined,
         sourceUrl: c.link,
         title: c.title,
         provider: c.host,
+        score: c._score,
+        query: c.query
       });
+
       if (out.length >= desired) break;
     }
-    debug.final = out.length;
 
-    // Fallback so UI never blanks
-    if (out.length === 0 && filtered.length) {
+    debug.final = out.length;
+    debug.domainCounts = Object.fromEntries(domainCounts.entries());
+    debug.farfetchCount = farfetchCount;
+
+    // Never blank: if still empty, return top thumbnails from ranked
+    if (out.length === 0 && ranked.length) {
       const fallback: ImageResult[] = [];
       const limit = Math.max(6, desired);
-      for (let i = 0; i < filtered.length && fallback.length < limit; i++) {
-        const c = filtered[i];
+      for (let i = 0; i < ranked.length && fallback.length < limit; i++) {
+        const c: any = ranked[i];
         fallback.push({
-          imageUrl: c.img,
+          imageUrl: c.thumb || c.img,
+          thumbnailUrl: c.thumb || undefined,
           sourceUrl: c.link,
           title: c.title,
           provider: c.host,
+          score: c._score,
+          query: c.query
         });
       }
       return res.status(200).json({
-        query: finalQuery,
         images: fallback,
         source: "google-cse",
-        debug,
-        page: { start: 1, count: fallback.length },
+        debug
       });
     }
 
-    // Normal success
     return res.status(200).json({
-      query: finalQuery,
       images: out,
       source: "google-cse",
-      debug,
-      page: { start: 1, count: out.length },
+      debug
     });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Unexpected error" });
