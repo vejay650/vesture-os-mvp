@@ -21,6 +21,7 @@ type Candidate = {
   query: string;    // which query produced it
 };
 
+/** ---------- Small helpers ---------- */
 const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
 const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
 
@@ -41,9 +42,7 @@ const EXCLUDE_INURL = [
   "/lookbook", "/editorial", "/review", "/reviews"
 ];
 
-const EXCLUDE_TERMS = [
-  "kids", "toddler", "boy", "girl", "baby",
-];
+const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
 
 const BLOCKED_DOMAINS = [
   "pinterest.", "pinimg.com",
@@ -52,8 +51,8 @@ const BLOCKED_DOMAINS = [
   "wikipedia."
 ];
 
-// These hosts frequently block hotlinking (common blank images).
-// We'll still return them, but we strongly prefer thumbnails when present.
+// Sites that commonly hotlink-block large images.
+// We'll prefer thumbnail when available for these.
 const HOTLINK_RISK = [
   "louisvuitton.com",
   "bottegaveneta.com",
@@ -61,10 +60,10 @@ const HOTLINK_RISK = [
   "moncler.com",
 ];
 
-/** ---------- Prompt → item-level query generation ---------- */
+/** ---------- Prompt → item-level queries ---------- */
 /**
- * We can still accept full sentences, but we convert to product-like queries.
- * This keeps relevance tight and reduces randomness.
+ * You can still send full sentences; we convert them into product-like queries.
+ * This makes results tighter than searching "outfit" directly.
  */
 function buildItemQueries(opts: {
   prompt?: string;
@@ -80,9 +79,8 @@ function buildItemQueries(opts: {
   const gender = clean(opts.gender);
 
   const base = (prompt || [event, mood, style, gender].filter(Boolean).join(" ")).trim();
-
-  // Minimal “intent” detection
   const lc = base.toLowerCase();
+
   const isNightOut = /(\bdate\b|\bdate night\b|\bnight out\b|\bevening\b|\bdinner\b|\bdrinks\b|\bparty\b)/i.test(lc);
   const isGame = /(\bgame\b|\bstadium\b|\barena\b|\bcourtside\b|\bmatch\b)/i.test(lc);
   const isStreet = /(\bstreetwear\b|\burban\b|\bcasual\b)/i.test(lc);
@@ -94,7 +92,6 @@ function buildItemQueries(opts: {
     g.includes("men") || g.includes("male") ? "men" :
     "unisex";
 
-  // Build a compact style hint for the queries
   const vibeBits: string[] = [];
   if (isMinimal) vibeBits.push("minimal", "clean");
   if (isStreet) vibeBits.push("streetwear");
@@ -102,13 +99,10 @@ function buildItemQueries(opts: {
   if (isGame) vibeBits.push("comfortable");
 
   const vibe = vibeBits.slice(0, 3).join(" ");
-
-  // Template query sets (tight + product-like)
-  // These generate items the UI can display as a “look”
   const queries: string[] = [];
 
   if (isNightOut && isGame) {
-    // Game date night = elevated but comfortable
+    // Game date night: elevated but comfy
     queries.push(
       `black fitted turtleneck ${genderHint}`,
       `tailored trousers dark ${genderHint}`,
@@ -119,15 +113,15 @@ function buildItemQueries(opts: {
     );
   } else if (isNightOut) {
     queries.push(
-      `blazer tailored ${genderHint}`,
+      `tailored blazer ${genderHint}`,
       `silk satin top ${genderHint}`,
-      `straight leg jeans dark ${genderHint}`,
-      `ankle boots leather ${genderHint}`,
+      `dark straight leg jeans ${genderHint}`,
+      `leather ankle boots ${genderHint}`,
       `small bag ${genderHint}`,
       `minimal jewelry ${genderHint}`
     );
   } else {
-    // General fallback outfit set
+    // General
     queries.push(
       `clean knit top ${genderHint}`,
       `straight leg jeans ${genderHint}`,
@@ -137,15 +131,11 @@ function buildItemQueries(opts: {
     );
   }
 
-  // Add vibe context lightly (don’t overload queries)
-  // e.g., “minimal clean” helps without making it too broad
   const enriched = queries.map(q => (vibe ? `${q} ${vibe}` : q).trim());
-
-  // Deduplicate
   return Array.from(new Set(enriched));
 }
 
-/** ---------- Google CSE (image) search ---------- */
+/** ---------- Google CSE image search (paged) ---------- */
 async function googleImageSearch(q: string, count: number, key: string, cx: string): Promise<any[]> {
   const results: any[] = [];
   let start = 1;
@@ -159,7 +149,6 @@ async function googleImageSearch(q: string, count: number, key: string, cx: stri
     url.searchParams.set("key", key);
     url.searchParams.set("cx", cx);
 
-    // Image hints
     url.searchParams.set("imgType", "photo");
     url.searchParams.set("imgSize", "large");
     url.searchParams.set("safe", "active");
@@ -194,33 +183,36 @@ function isProductish(url: string) {
   );
 }
 
+function tokenizeQuery(q: string) {
+  const stop = new Set([
+    "the","and","or","for","with","outfit",
+    "women","men","unisex","evening","comfortable",
+    "minimal","clean"
+  ]);
+
+  return q
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .map(t => t.replace(/[^a-z0-9\-]/g, ""))
+    .filter(t => t.length >= 3 && !stop.has(t));
+}
+
 function scoreCandidate(c: Candidate, tokens: string[]) {
   const text = (c.title + " " + c.link).toLowerCase();
   let s = 0;
 
   if (isProductish(c.link)) s += 8;
 
-  // token relevance (soft)
   let hits = 0;
   for (let i = 0; i < tokens.length; i++) {
     if (text.includes(tokens[i])) hits++;
   }
   s += hits * 2;
 
-  // Farfetch soft penalty so it doesn’t dominate
+  // Soft penalty so Farfetch doesn't dominate
   if (c.host.includes("farfetch")) s -= 2;
 
   return s;
-}
-
-function tokenizeQuery(q: string) {
-  // Simple tokenization: keep useful words only
-  const stop = new Set(["the","and","or","for","with","outfit","women","men","unisex","evening","comfortable"]);
-  return q
-    .toLowerCase()
-    .split(/[\s,]+/)
-    .map(t => t.replace(/[^a-z0-9\-]/g, ""))
-    .filter(t => t.length >= 3 && !stop.has(t));
 }
 
 /** ---------- API Handler ---------- */
@@ -248,9 +240,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const key = clean(process.env.GOOGLE_CSE_KEY);
     const cx = clean(process.env.GOOGLE_CSE_ID);
     if (!key || !cx) {
-      return res.status(500).json({
-        error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID."
-      });
+      return res.status(500).json({ error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID." });
     }
 
     // Allowed retailer hosts
@@ -267,7 +257,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const siteSet = new Set<string>();
     for (let i = 0; i < siteList.length; i++) siteSet.add(siteList[i]);
 
-    // Build site filter string
     const siteFilter = Array.from(siteSet).map(s => `site:${s}`).join(" OR ");
 
     // Build item-level queries
@@ -275,7 +264,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ? Array.from(new Set(queriesOverride)).slice(0, 10)
       : buildItemQueries({ prompt, event, mood, style, gender }).slice(0, 10);
 
-    // We want a consistent number per query
     const perQuery = Math.max(6, Math.ceil(desired / Math.min(queries.length, 6)));
 
     const debug: any = {
@@ -285,36 +273,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       retailers: Array.from(siteSet),
     };
 
-    // Fetch candidates per query
+    // Collect candidates per query
     let candidates: Candidate[] = [];
+
     for (let qi = 0; qi < queries.length; qi++) {
       const q = queries[qi];
 
-      // Nudge towards product pages; avoid editorial
+      // Nudge toward product pages; avoid editorial/noise
       const finalQuery = `${q} -pinterest -editorial -review (${siteFilter})`.trim();
 
       const items = await googleImageSearch(finalQuery, perQuery * 3, key, cx);
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        const img = clean(it?.link);
-        const thumb = clean(it?.image?.thumbnailLink || "");
-        const ctx = clean(it?.image?.contextLink || it?.image?.context || it?.displayLink || "");
-        const link = clean(ctx); // page url
-        const title = clean(it?.title || "");
+
+        // ✅ TypeScript-safe string coercion (fixes Vercel build error)
+        const img = String(it?.link ?? "");
+        const thumb = String(it?.image?.thumbnailLink ?? "");
+        const link = String(it?.image?.contextLink ?? it?.image?.context ?? it?.displayLink ?? "");
+        const title = String(it?.title ?? "");
+
         if (!img || !link) continue;
 
         try {
           const host = normHost(new URL(link).hostname);
 
-          // Basic domain blocks
+          // Block obvious non-retailers
           let blocked = false;
           for (let b = 0; b < BLOCKED_DOMAINS.length; b++) {
             if (host.includes(BLOCKED_DOMAINS[b])) { blocked = true; break; }
           }
           if (blocked) continue;
 
-          // Must be allowlisted (allow subdomains)
+          // Must be in whitelist (allow subdomains)
           let allowed = false;
           const arr = Array.from(siteSet);
           for (let k = 0; k < arr.length; k++) {
@@ -330,45 +321,39 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
           candidates.push({ title, link, img, thumb, host, query: q });
         } catch {
-          // ignore malformed
+          // ignore malformed URLs
         }
       }
     }
 
     debug.totalCandidates = candidates.length;
 
-    // Score + rank (query-aware)
+    // Rank
     const ranked = candidates
-      .map(c => {
+      .map((c) => {
         const tokens = tokenizeQuery(c.query);
         const s = scoreCandidate(c, tokens);
         return { ...c, _score: s };
       })
       .sort((a: any, b: any) => (b._score || 0) - (a._score || 0));
 
-    // Diversification:
-    // - cap per domain
-    // - cap farfetch specifically
+    // Diversify: cap per domain + cap Farfetch specifically
     const perDomainCap = desired <= 12 ? 2 : 3;
     const farfetchCap = desired <= 12 ? 2 : 3;
 
     const domainCounts = new Map<string, number>();
     let farfetchCount = 0;
 
-    // Dedupe keys
     const seen = new Set<string>();
     const out: ImageResult[] = [];
 
     for (let i = 0; i < ranked.length; i++) {
       const c: any = ranked[i];
 
-      // Domain caps
-      const count = domainCounts.get(c.host) || 0;
-      if (count >= perDomainCap) continue;
+      const domCount = domainCounts.get(c.host) || 0;
+      if (domCount >= perDomainCap) continue;
 
-      if (c.host.includes("farfetch")) {
-        if (farfetchCount >= farfetchCap) continue;
-      }
+      if (c.host.includes("farfetch") && farfetchCount >= farfetchCap) continue;
 
       // Dedupe by page path + image filename
       let pageKey = c.link;
@@ -388,11 +373,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (seen.has(k)) continue;
       seen.add(k);
 
-      // Hotlink mitigation: prefer thumbnail for risky domains
-      const risky = HOTLINK_RISK.some(d => c.host.endsWith(d));
+      // Hotlink mitigation: prefer thumbnail on risky domains
+      const risky = HOTLINK_RISK.some(d => String(c.host).endsWith(d));
       const imageUrl = risky && c.thumb ? c.thumb : c.img;
 
-      domainCounts.set(c.host, count + 1);
+      domainCounts.set(c.host, domCount + 1);
       if (c.host.includes("farfetch")) farfetchCount++;
 
       out.push({
@@ -402,7 +387,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         title: c.title,
         provider: c.host,
         score: c._score,
-        query: c.query
+        query: c.query,
       });
 
       if (out.length >= desired) break;
@@ -412,7 +397,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     debug.domainCounts = Object.fromEntries(domainCounts.entries());
     debug.farfetchCount = farfetchCount;
 
-    // Never blank: if still empty, return top thumbnails from ranked
+    // Never blank: fallback to top ranked thumbnails/images
     if (out.length === 0 && ranked.length) {
       const fallback: ImageResult[] = [];
       const limit = Math.max(6, desired);
@@ -425,21 +410,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           title: c.title,
           provider: c.host,
           score: c._score,
-          query: c.query
+          query: c.query,
         });
       }
-      return res.status(200).json({
-        images: fallback,
-        source: "google-cse",
-        debug
-      });
+      return res.status(200).json({ images: fallback, source: "google-cse", debug });
     }
 
-    return res.status(200).json({
-      images: out,
-      source: "google-cse",
-      debug
-    });
+    return res.status(200).json({ images: out, source: "google-cse", debug });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Unexpected error" });
   }
