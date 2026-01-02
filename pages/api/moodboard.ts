@@ -2,9 +2,8 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-/* =======================
-   Types
-======================= */
+const VERSION = "moodboard-v3-2026-01-02a"; // <-- use this to verify the deploy is live
+
 type ImageResult = {
   imageUrl: string;
   thumbnailUrl?: string;
@@ -26,20 +25,9 @@ type Candidate = {
   score: number;
 };
 
-/* =======================
-   Helpers
-======================= */
 const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
 const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
 const toFirstString = (v: any) => (Array.isArray(v) ? v[0] : v);
-
-const containsAny = (hay: string, needles: string[]) => {
-  const lc = (hay || "").toLowerCase();
-  for (let i = 0; i < needles.length; i++) {
-    if (lc.includes(needles[i].toLowerCase())) return true;
-  }
-  return false;
-};
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -47,9 +35,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-/* =======================
-   Filters / Rules
-======================= */
 const EXCLUDE_INURL = [
   "/kids/", "/girls/", "/boys/", "/baby/",
   "/help/", "/blog/", "/story/", "/stories/", "/press/",
@@ -59,19 +44,11 @@ const EXCLUDE_INURL = [
 ];
 
 const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
+const BLOCKED_DOMAINS = ["pinterest.", "pinimg.com", "twitter.", "x.com", "facebook.", "reddit.", "tumblr.", "wikipedia."];
 
-const BLOCKED_DOMAINS = [
-  "pinterest.", "pinimg.com",
-  "twitter.", "x.com",
-  "facebook.", "reddit.", "tumblr.",
-  "wikipedia.",
-];
-
+// Hotlink risk domains (prefer thumbs when available)
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
-/* =======================
-   Category guesser
-======================= */
 type Category = "tops" | "bottoms" | "outerwear" | "shoes" | "accessories" | "other";
 
 function guessCategory(q: string, title: string, url: string): Category {
@@ -79,15 +56,15 @@ function guessCategory(q: string, title: string, url: string): Category {
 
   if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|heel|heels|trainer|trainers|footwear)/.test(t)) return "shoes";
   if (/(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet)/.test(t)) return "accessories";
-  if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|denim jacket|leather jacket)/.test(t)) return "outerwear";
-  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt)/.test(t)) return "bottoms";
+  if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|denim jacket|leather jacket|overcoat)/.test(t)) return "outerwear";
+  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt|chinos)/.test(t)) return "bottoms";
   if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse)/.test(t)) return "tops";
   return "other";
 }
 
-/* =======================
-   Simple in-memory cache (per Vercel instance)
-======================= */
+/** -----------------------
+ * Simple cache (per Vercel instance)
+ * ---------------------- */
 type CacheVal = { at: number; data: any };
 const CACHE_TTL_MS = 60_000; // 60s
 const globalAny = globalThis as any;
@@ -107,9 +84,9 @@ function setCache(key: string, data: any) {
   cache.set(key, { at: Date.now(), data });
 }
 
-/* =======================
-   Google CSE image search (single call, no pagination)
-======================= */
+/** -----------------------
+ * Google CSE single call (no pagination)
+ * ---------------------- */
 async function googleImageSearchOnce(q: string, key: string, cx: string, num: number): Promise<{ items: any[]; status: number }> {
   const url = new URL("https://www.googleapis.com/customsearch/v1");
   url.searchParams.set("q", q);
@@ -124,42 +101,28 @@ async function googleImageSearchOnce(q: string, key: string, cx: string, num: nu
 
   const res = await fetch(url.toString());
   const status = res.status;
-
   if (!res.ok) return { items: [], status };
+
   const data = await res.json();
   const items = (data?.items || []) as any[];
   return { items, status };
 }
 
-/* =======================
-   Fallback queries (6 max)
-======================= */
-function fallbackQueries(prompt: string, gender: string): string[] {
-  const gLc = (gender || "").toLowerCase();
-  const g =
-    gLc.includes("women") || gLc.includes("female") ? "women" :
-    gLc.includes("men") || gLc.includes("male") ? "men" :
-    "unisex";
-
-  const p = (prompt || "").toLowerCase().split(/\s+/).slice(0, 6).join(" ");
-  const P = p ? ` ${p}` : "";
-
-  return [
-    `boots${P} ${g}`,
-    `blazer${P} ${g}`,
-    `shirt${P} ${g}`,
-    `trousers${P} ${g}`,
-    `jacket${P} ${g}`,
-    `belt${P} ${g}`,
-  ];
+function productishBoost(url: string): number {
+  const u = (url || "").toLowerCase();
+  if (u.includes("/product") || u.includes("/products") || u.includes("/p/") || u.includes("/item/") || u.includes("/shop/") || u.includes("/dp/") || u.includes("/sku/")) {
+    return 10;
+  }
+  return 0;
 }
 
-/* =======================
-   OpenAI → 6 strong product queries
-======================= */
+/** -----------------------
+ * OpenAI -> EXACTLY 6 queries (hard cap)
+ * ---------------------- */
 async function aiQueries(prompt: string, gender: string): Promise<string[]> {
   const apiKey = clean(process.env.OPENAI_API_KEY);
   if (!apiKey) return [];
+
   const client = new OpenAI({ apiKey });
   const model = clean(process.env.OPENAI_MODEL) || "gpt-4o-mini";
 
@@ -169,7 +132,7 @@ Rules:
 - 3–7 words each
 - Product-focused (boots, blazer, trousers, shirt, jacket, bag, belt, etc.)
 - Cover categories: shoes, tops, bottoms, outerwear, accessory (at least 1 each)
-Return ONLY valid JSON: { "queries": ["...", "...", ...] }
+Return ONLY valid JSON: { "queries": ["...", "...", "...", "...", "...", "..."] }
 Gender hint: "${gender}"
 `.trim();
 
@@ -193,193 +156,190 @@ Gender hint: "${gender}"
   }
 }
 
-/* =======================
-   Product-ish boost
-======================= */
-function productishBoost(url: string): number {
-  const u = (url || "").toLowerCase();
-  if (
-    u.includes("/product") ||
-    u.includes("/products") ||
-    u.includes("/p/") ||
-    u.includes("/item/") ||
-    u.includes("/shop/") ||
-    u.includes("/dp/") ||
-    u.includes("/sku/")
-  ) return 10;
-  return 0;
+function fallbackQueries(prompt: string, gender: string): string[] {
+  const gLc = (gender || "").toLowerCase();
+  const g =
+    gLc.includes("women") || gLc.includes("female") ? "women" :
+    gLc.includes("men") || gLc.includes("male") ? "men" :
+    "unisex";
+
+  const p = (prompt || "").toLowerCase().split(/\s+/).slice(0, 6).join(" ");
+  const P = p ? ` ${p}` : "";
+
+  return [
+    `black boots${P} ${g}`,
+    `tailored blazer${P} ${g}`,
+    `dress shirt${P} ${g}`,
+    `tailored trousers${P} ${g}`,
+    `bomber jacket${P} ${g}`,
+    `leather belt${P} ${g}`,
+  ].slice(0, 6);
 }
 
-/* =======================
-   API Handler
-======================= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // short CDN cache helps reduce repeat hits; still fresh
+  // Short CDN caching reduces repeat calls
   res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=60");
 
-  try {
-    const input: any = req.method === "POST" ? (req.body || {}) : (req.query || {});
-    const qVal = toFirstString(input.q);
-    const prompt = clean(input.prompt || qVal || "");
-    const gender = clean(input.gender || "unisex");
-    const desired = 18;
+  const input: any = req.method === "POST" ? (req.body || {}) : (req.query || {});
+  const qVal = toFirstString(input.q);
+  const prompt = clean(input.prompt || qVal || "");
+  const gender = clean(input.gender || "unisex");
 
-    if (!prompt) return res.status(400).json({ error: "Missing prompt (send 'prompt' or 'q')" });
+  if (!prompt) return res.status(400).json({ error: "Missing prompt (send 'prompt' or 'q')" });
 
-    const cseKey = clean(process.env.GOOGLE_CSE_KEY);
-    const cseCx = clean(process.env.GOOGLE_CSE_ID);
-    if (!cseKey || !cseCx) return res.status(500).json({ error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID" });
+  const cseKey = clean(process.env.GOOGLE_CSE_KEY);
+  const cseCx = clean(process.env.GOOGLE_CSE_ID);
+  if (!cseKey || !cseCx) return res.status(500).json({ error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID" });
 
-    const sites = clean(process.env.RETAILER_SITES || "")
-      .split(",")
-      .map(normHost)
-      .filter(Boolean);
+  const sites = clean(process.env.RETAILER_SITES || "")
+    .split(",")
+    .map(normHost)
+    .filter(Boolean);
 
-    if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
+  if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
 
-    const cacheKey = `v1:${gender}:${prompt.toLowerCase()}`;
-    const cached = getCache(cacheKey);
-    if (cached) return res.status(200).json(cached);
+  const cacheKey = `v3:${VERSION}:${gender}:${prompt.toLowerCase()}`;
+  const cached = getCache(cacheKey);
+  if (cached) return res.status(200).json(cached);
 
-    // group site filters but only try top 2 groups to reduce calls
-    const siteGroups = chunk(sites, 4).slice(0, 2).map((g) => g.map((s) => `site:${s}`).join(" OR "));
+  // HARD LIMITS to avoid 429:
+  const MAX_SITE_GROUPS = 2;   // <-- should never show groupsTried > 2
+  const GROUP_SIZE = 4;
+  const siteGroups = chunk(sites, GROUP_SIZE)
+    .slice(0, MAX_SITE_GROUPS)
+    .map((g) => g.map((s) => `site:${s}`).join(" OR "));
 
-    let queries: string[] = [];
-    let querySource: "openai" | "fallback" = "fallback";
+  let queries: string[] = [];
+  let querySource: "openai" | "fallback" = "fallback";
 
-    const aq = await aiQueries(prompt, gender);
-    if (aq.length === 6) {
-      queries = aq;
-      querySource = "openai";
-    } else {
-      queries = fallbackQueries(prompt, gender);
-      querySource = "fallback";
-    }
+  const aq = await aiQueries(prompt, gender);
+  if (aq.length === 6) {
+    queries = aq;
+    querySource = "openai";
+  } else {
+    queries = fallbackQueries(prompt, gender);
+    querySource = "fallback";
+  }
 
-    const candidates: Candidate[] = [];
-    const fetchDebug: Record<string, any> = {};
-    let saw429 = false;
+  const candidates: Candidate[] = [];
+  const fetchDebug: Record<string, any> = {};
+  let saw429 = false;
 
-    // Only 6 queries * 2 groups = 12 google requests max
-    for (let qi = 0; qi < queries.length; qi++) {
-      const q = queries[qi];
-      fetchDebug[q] = { statusCodes: [] as number[], itemsSeen: 0, groupsTried: 0 };
+  // Only 6 queries * 2 groups = 12 requests max
+  outer: for (let qi = 0; qi < queries.length; qi++) {
+    const q = queries[qi];
+    fetchDebug[q] = { groupsTried: 0, statusCodes: [] as number[], itemsSeen: 0 };
 
-      for (let gi = 0; gi < siteGroups.length; gi++) {
-        const groupFilter = siteGroups[gi];
-        fetchDebug[q].groupsTried += 1;
+    for (let gi = 0; gi < siteGroups.length; gi++) {
+      const groupFilter = siteGroups[gi];
+      fetchDebug[q].groupsTried += 1;
 
-        const search = `${q} product photo -pinterest -editorial -review (${groupFilter})`;
-        const { items, status } = await googleImageSearchOnce(search, cseKey, cseCx, 10);
-        fetchDebug[q].statusCodes.push(status);
-        fetchDebug[q].itemsSeen += items.length;
+      const search = `${q} product photo -pinterest -editorial -review (${groupFilter})`;
+      const { items, status } = await googleImageSearchOnce(search, cseKey, cseCx, 10);
 
-        if (status === 429) {
-          saw429 = true;
-          continue;
-        }
+      fetchDebug[q].statusCodes.push(status);
+      fetchDebug[q].itemsSeen += items.length;
 
-        for (let i = 0; i < items.length; i++) {
-          const it = items[i];
-          const img: string = String((it as any)?.link ?? "");
-          const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
-          const link: string = String((it as any)?.image?.contextLink ?? "");
-          const title: string = String((it as any)?.title ?? "");
-          if (!img || !link) continue;
+      if (status === 429) {
+        saw429 = true;
+        break outer; // <-- STOP immediately (no hammering)
+      }
+      if (status === 403) {
+        // permissions/billing issue
+        break outer;
+      }
 
-          let host = "";
-          try { host = normHost(new URL(link).hostname); } catch { continue; }
-          if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
-          if (!sites.some((s) => host === s || host.endsWith(s))) continue;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const img: string = String((it as any)?.link ?? "");
+        const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
+        const link: string = String((it as any)?.image?.contextLink ?? "");
+        const title: string = String((it as any)?.title ?? "");
+        if (!img || !link) continue;
 
-          const urlLc = link.toLowerCase();
-          const titleLc = title.toLowerCase();
-          if (containsAny(urlLc, EXCLUDE_INURL)) continue;
-          if (containsAny(titleLc, EXCLUDE_TERMS)) continue;
+        let host = "";
+        try { host = normHost(new URL(link).hostname); } catch { continue; }
 
-          let score = productishBoost(link);
-          const tokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
-          const text = (title + " " + link).toLowerCase();
-          for (let t = 0; t < tokens.length; t++) if (text.includes(tokens[t])) score += 2;
+        if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
+        if (!sites.some((s) => host === s || host.endsWith(s))) continue;
 
-          if (host.includes("farfetch")) score -= 2;
-          if (host.includes("ssense")) score += 1;
-          if (host.includes("nepenthes")) score += 1;
+        const urlLc = link.toLowerCase();
+        const titleLc = title.toLowerCase();
+        if (containsAny(urlLc, EXCLUDE_INURL)) continue;
+        if (containsAny(titleLc, EXCLUDE_TERMS)) continue;
 
-          candidates.push({ title, link, img, thumb, host, query: q, score });
-        }
+        let score = productishBoost(link);
+        const tokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+        const text = (title + " " + link).toLowerCase();
+        for (let t = 0; t < tokens.length; t++) if (text.includes(tokens[t])) score += 2;
+
+        candidates.push({ title, link, img, thumb, host, query: q, score });
       }
     }
-
-    candidates.sort((a, b) => b.score - a.score);
-
-    // balance
-    const perDomainCap = 3;
-    const farfetchCap = 3;
-    const domainCount = new Map<string, number>();
-    const catCounts = new Map<Category, number>();
-    const catCaps: Record<Category, number> = { tops: 5, bottoms: 5, outerwear: 4, shoes: 4, accessories: 3, other: 3 };
-    const seen = new Set<string>();
-    const out: ImageResult[] = [];
-    let farfetchCount = 0;
-
-    for (let i = 0; i < candidates.length; i++) {
-      const c = candidates[i];
-      const dc = domainCount.get(c.host) || 0;
-      if (dc >= perDomainCap) continue;
-      if (c.host.includes("farfetch") && farfetchCount >= farfetchCap) continue;
-
-      const k = `${c.link}::${c.img}`;
-      if (seen.has(k)) continue;
-
-      const cat = guessCategory(c.query, c.title, c.link);
-      const cc = catCounts.get(cat) || 0;
-      if (cc >= (catCaps[cat] ?? 3)) continue;
-
-      seen.add(k);
-
-      const risky = HOTLINK_RISK.some((d) => c.host.endsWith(d));
-      const imageUrl = risky && c.thumb ? c.thumb : c.img;
-
-      domainCount.set(c.host, dc + 1);
-      catCounts.set(cat, cc + 1);
-      if (c.host.includes("farfetch")) farfetchCount++;
-
-      out.push({
-        imageUrl,
-        thumbnailUrl: c.thumb || undefined,
-        sourceUrl: c.link,
-        title: c.title,
-        provider: c.host,
-        score: c.score,
-        query: c.query,
-        category: cat,
-      });
-
-      if (out.length >= desired) break;
-    }
-
-    const response = {
-      images: out,
-      source: "google-cse",
-      debug: {
-        prompt,
-        querySource,
-        queries,
-        totalCandidates: candidates.length,
-        saw429,
-        domainCounts: Object.fromEntries(domainCount.entries()),
-        categoryCounts: Object.fromEntries(Array.from(catCounts.entries())),
-        fetch: fetchDebug,
-        note: saw429
-          ? "Google CSE is rate-limiting (429). Reduced calls + caching enabled. If still empty, increase quota or use fewer site groups."
-          : undefined,
-      },
-    };
-
-    setCache(cacheKey, response);
-    return res.status(200).json(response);
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || "Unexpected error" });
   }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  // selection w/ category caps (prevents "all pants")
+  const desired = 18;
+  const domainCount = new Map<string, number>();
+  const seen = new Set<string>();
+  const catCounts = new Map<Category, number>();
+  const catCaps: Record<Category, number> = { tops: 5, bottoms: 5, outerwear: 4, shoes: 4, accessories: 3, other: 3 };
+
+  const out: ImageResult[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const k = `${c.link}::${c.img}`;
+    if (seen.has(k)) continue;
+
+    const dc = domainCount.get(c.host) || 0;
+    if (dc >= 3) continue;
+
+    const cat = guessCategory(c.query, c.title, c.link);
+    const cc = catCounts.get(cat) || 0;
+    if (cc >= (catCaps[cat] ?? 3)) continue;
+
+    const risky = HOTLINK_RISK.some((d) => c.host.endsWith(d));
+    const imageUrl = risky && c.thumb ? c.thumb : c.img;
+
+    seen.add(k);
+    domainCount.set(c.host, dc + 1);
+    catCounts.set(cat, cc + 1);
+
+    out.push({
+      imageUrl,
+      thumbnailUrl: c.thumb || undefined,
+      sourceUrl: c.link,
+      title: c.title,
+      provider: c.host,
+      score: c.score,
+      query: c.query,
+      category: cat,
+    });
+
+    if (out.length >= desired) break;
+  }
+
+  const response = {
+    images: out,
+    source: "google-cse",
+    debug: {
+      version: VERSION,
+      prompt,
+      querySource,
+      queries,
+      totalCandidates: candidates.length,
+      saw429,
+      groupsMaxExpected: MAX_SITE_GROUPS,
+      fetch: fetchDebug,
+      note: saw429
+        ? "Google CSE is rate-limiting (429). This build hard-limits requests + stops immediately on 429. You still need higher quota / billing in Google Cloud for consistent results."
+        : undefined,
+    },
+  };
+
+  setCache(cacheKey, response);
+  return res.status(200).json(response);
 }
