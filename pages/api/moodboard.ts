@@ -61,32 +61,23 @@ const BLOCKED_DOMAINS = [
   "wikipedia.",
 ];
 
-// These often block hotlinking. We'll prefer thumbnails when available.
+// Some brands block hotlinking; prefer thumbnails when available
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
 /* =======================
-   Category guesser (for balance)
+   Category guesser (balance)
 ======================= */
 type Category = "tops" | "bottoms" | "outerwear" | "shoes" | "accessories" | "other";
 
 function guessCategory(q: string, title: string, url: string): Category {
   const t = (q + " " + title + " " + url).toLowerCase();
 
-  if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|heel|heels|trainer|trainers|footwear)/.test(t)) {
-    return "shoes";
-  }
-  if (/(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet)/.test(t)) {
-    return "accessories";
-  }
-  if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|denim jacket|leather jacket)/.test(t)) {
-    return "outerwear";
-  }
-  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt)/.test(t)) {
-    return "bottoms";
-  }
-  if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse)/.test(t)) {
-    return "tops";
-  }
+  if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|heel|heels|trainer|trainers|footwear)/.test(t)) return "shoes";
+  if (/(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet)/.test(t)) return "accessories";
+  if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|denim jacket|leather jacket)/.test(t)) return "outerwear";
+  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt)/.test(t)) return "bottoms";
+  if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse)/.test(t)) return "tops";
+
   return "other";
 }
 
@@ -105,6 +96,8 @@ async function googleImageSearch(q: string, count: number, key: string, cx: stri
     url.searchParams.set("start", String(start));
     url.searchParams.set("key", key);
     url.searchParams.set("cx", cx);
+
+    // image hints
     url.searchParams.set("imgType", "photo");
     url.searchParams.set("imgSize", "large");
     url.searchParams.set("safe", "active");
@@ -124,69 +117,32 @@ async function googleImageSearch(q: string, count: number, key: string, cx: stri
 }
 
 /* =======================
-   Heuristic fallback queries
+   Fallback queries (when OpenAI missing)
+   - include the user's prompt so it's not generic
 ======================= */
 function fallbackQueries(prompt: string, gender: string): string[] {
-  const lc = (prompt || "").toLowerCase();
   const gLc = (gender || "").toLowerCase();
   const g =
     gLc.includes("women") || gLc.includes("female") ? "women" :
     gLc.includes("men") || gLc.includes("male") ? "men" :
     "unisex";
 
-  const isDate = /(date|date night|night out|evening|dinner|drinks|party)/i.test(lc);
-  const isGame = /(game|stadium|arena|courtside|match)/i.test(lc);
-  const isOversized = /(oversized|baggy|wide|relaxed)/i.test(lc);
-  const isStreetwear = /(streetwear|street|urban)/i.test(lc);
-  const isJapanese = /(japanese|tokyo|harajuku)/i.test(lc);
-
-  const mods = [
-    isOversized ? "oversized" : "",
-    isStreetwear ? "streetwear" : "",
-    isJapanese ? "japanese" : "",
-  ].filter(Boolean).join(" ");
-
-  const M = mods ? ` ${mods}` : "";
-
-  if (isDate && isGame) {
-    return [
-      `turtleneck${M} ${g}`,
-      `tailored trousers${M} ${g}`,
-      `leather jacket${M} ${g}`,
-      `white leather sneakers${M} ${g}`,
-      `crossbody bag${M} ${g}`,
-      `minimal chain necklace${M} ${g}`,
-    ];
-  }
-
-  if (isDate) {
-    return [
-      `tailored blazer${M} ${g}`,
-      `silk satin top${M} ${g}`,
-      `dark straight leg jeans${M} ${g}`,
-      `leather ankle boots${M} ${g}`,
-      `small shoulder bag${M} ${g}`,
-      `minimal jewelry${M} ${g}`,
-    ];
-  }
+  const p = (prompt || "").toLowerCase().split(/\s+/).slice(0, 6).join(" ");
+  const P = p ? ` ${p}` : "";
 
   return [
-    `jacket${M} ${g}`,
-    `top${M} ${g}`,
-    `pants${M} ${g}`,
-    `shoes${M} ${g}`,
-    `bag${M} ${g}`,
+    `jacket${P} ${g}`,
+    `shirt${P} ${g}`,
+    `pants${P} ${g}`,
+    `sneakers${P} ${g}`,
+    `bag${P} ${g}`,
   ];
 }
 
 /* =======================
-   OpenAI → smart item queries
+   OpenAI → smart product queries
 ======================= */
-async function aiQueries(opts: {
-  prompt: string;
-  gender: string;
-  retailerSites: string[];
-}): Promise<string[]> {
+async function aiQueries(opts: { prompt: string; gender: string; retailerSites: string[] }): Promise<string[]> {
   const { prompt, gender, retailerSites } = opts;
 
   const apiKey = clean(process.env.OPENAI_API_KEY);
@@ -200,7 +156,7 @@ You are an expert fashion stylist AND shopping assistant.
 Convert a user's free-text style prompt into specific, searchable PRODUCT queries (not full outfits).
 Return ONLY valid JSON.
 - Produce 10 to 12 queries.
-- Each query: 3–7 words, product-oriented, include key attributes from prompt (style, color, fabric, vibe).
+- Each query: 3–7 words, product-oriented, include key attributes from prompt (style, colors, fabrics, vibe).
 - Force category coverage: at least 2 tops, 2 bottoms, 2 outerwear, 2 shoes, 1 accessory.
 - Avoid generic words like "outfit" unless paired with a product.
 Gender hint: "${gender}"
@@ -237,8 +193,7 @@ JSON shape: { "queries": ["..."] }
     .map((x: any) => String(x ?? "").trim())
     .filter((x: string) => !!x);
 
-  const uniq = Array.from(new Set(asStrings)).slice(0, 12);
-  return uniq;
+  return Array.from(new Set(asStrings)).slice(0, 12);
 }
 
 /* =======================
@@ -262,7 +217,6 @@ function productishBoost(url: string): number {
    API Handler
 ======================= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Prevent caching so results change across prompts
   res.setHeader("Cache-Control", "no-store");
 
   try {
@@ -293,9 +247,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(500).json({ error: "RETAILER_SITES is empty" });
     }
 
-    const siteFilter = sites.map((s) => `site:${s}`).join(" OR ");
-
-    // 1) Smart queries (OpenAI) with fallback
+    // 1) Generate smart product queries
     let queries: string[] = [];
     let querySource: "openai" | "fallback" = "fallback";
 
@@ -306,7 +258,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         querySource = "openai";
       }
     } catch {
-      // ignore and fallback
+      // ignore
     }
 
     if (!queries.length) {
@@ -314,20 +266,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       querySource = "fallback";
     }
 
-    // 2) Pull images per query
+    // 2) SEARCH WITHOUT giant site:OR filter (key fix)
+    // Then filter results by allowed hosts in code.
     const perQuery = Math.max(6, Math.ceil(desired / Math.min(queries.length, 8)));
     const candidates: Candidate[] = [];
 
     for (let qi = 0; qi < queries.length; qi++) {
       const q = queries[qi];
-      const search = `${q} -pinterest -editorial -review -lookbook (${siteFilter})`;
 
-      const items = await googleImageSearch(search, perQuery * 3, cseKey, cseCx);
+      // Make the search product-focused and broad
+      const search = `${q} product photo -pinterest -editorial -review -lookbook`;
+
+      const items = await googleImageSearch(search, perQuery * 4, cseKey, cseCx);
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
 
-        // ✅ TypeScript-safe extraction
         const img: string = String((it as any)?.link ?? "");
         const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
         const link: string = String((it as any)?.image?.contextLink ?? "");
@@ -343,6 +297,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
 
         if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
+
+        // ✅ whitelist filter happens here (replaces giant OR query)
         if (!sites.some((s) => host === s || host.endsWith(s))) continue;
 
         const urlLc = link.toLowerCase();
@@ -350,7 +306,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (containsAny(urlLc, EXCLUDE_INURL)) continue;
         if (containsAny(titleLc, EXCLUDE_TERMS)) continue;
 
-        // scoring
         let score = 0;
         score += productishBoost(link);
 
@@ -360,7 +315,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (text.includes(qTokens[t])) score += 2;
         }
 
-        // diversity nudges
         if (host.includes("farfetch")) score -= 2;
         if (host.includes("ssense")) score += 1;
         if (host.includes("nepenthes")) score += 1;
@@ -369,14 +323,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // 3) Rank
     candidates.sort((a, b) => b.score - a.score);
 
-    // 4) Diversify + Dedupe + Category Balance
+    // 3) Diversify + category balance
     const perDomainCap = desired <= 12 ? 2 : 3;
     const farfetchCap = desired <= 12 ? 2 : 3;
 
-    // Category caps (prevents "all pants")
     const catCaps: Record<Category, number> = {
       tops: 5,
       bottoms: 5,
@@ -395,16 +347,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
 
-      // domain caps
       const domCount = domainCount.get(c.host) || 0;
       if (domCount >= perDomainCap) continue;
       if (c.host.includes("farfetch") && farfetchCount >= farfetchCap) continue;
 
-      // dedupe
       const dedupeKey = `${c.link}::${c.img}`;
       if (seen.has(dedupeKey)) continue;
 
-      // category caps
       const cat = guessCategory(c.query, c.title, c.link);
       const cc = catCounts.get(cat) || 0;
       if (cc >= (catCaps[cat] ?? 3)) continue;
