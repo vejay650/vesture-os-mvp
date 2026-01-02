@@ -30,7 +30,6 @@ type Candidate = {
 ======================= */
 const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
 const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
-
 const containsAny = (hay: string, needles: string[]) => {
   const lc = (hay || "").toLowerCase();
   for (let i = 0; i < needles.length; i++) {
@@ -38,49 +37,28 @@ const containsAny = (hay: string, needles: string[]) => {
   }
   return false;
 };
-
 const toFirstString = (v: any) => (Array.isArray(v) ? v[0] : v);
 
 /* =======================
    Filters / Rules
 ======================= */
 const EXCLUDE_INURL = [
-  "/kids/",
-  "/girls/",
-  "/boys/",
-  "/baby/",
-  "/help/",
-  "/blog/",
-  "/story/",
-  "/stories/",
-  "/press/",
-  "/account/",
-  "/privacy",
-  "/terms",
-  "size-guide",
-  "size_guide",
-  "guide",
-  "policy",
-  "/lookbook",
-  "/editorial",
-  "/review",
-  "/reviews",
+  "/kids/", "/girls/", "/boys/", "/baby/",
+  "/help/", "/blog/", "/story/", "/stories/", "/press/",
+  "/account/", "/privacy", "/terms",
+  "size-guide", "size_guide", "guide", "policy",
+  "/lookbook", "/editorial", "/review", "/reviews",
 ];
 
 const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
 
 const BLOCKED_DOMAINS = [
-  "pinterest.",
-  "pinimg.com",
-  "twitter.",
-  "x.com",
-  "facebook.",
-  "reddit.",
-  "tumblr.",
+  "pinterest.", "pinimg.com",
+  "twitter.", "x.com",
+  "facebook.", "reddit.", "tumblr.",
   "wikipedia.",
 ];
 
-// These often block hotlinking. We'll prefer thumbnails when available.
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
 /* =======================
@@ -119,7 +97,7 @@ async function googleImageSearch(q: string, count: number, key: string, cx: stri
 /* =======================
    Heuristic fallback (if OpenAI missing/fails)
 ======================= */
-function fallbackQueries(prompt: string, gender: string) {
+function fallbackQueries(prompt: string, gender: string): string[] {
   const lc = (prompt || "").toLowerCase();
   const gLc = (gender || "").toLowerCase();
   const g =
@@ -183,32 +161,26 @@ async function aiQueries(opts: {
   prompt: string;
   gender: string;
   retailerSites: string[];
-}) {
+}): Promise<string[]> {
   const { prompt, gender, retailerSites } = opts;
 
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const apiKey = clean(process.env.OPENAI_API_KEY);
+  if (!apiKey) return [];
 
-  // Keep it deterministic-ish, but not identical every time
-  const temperature = 0.4;
+  const client = new OpenAI({ apiKey });
+  const model = clean(process.env.OPENAI_MODEL) || "gpt-4o-mini";
 
   const system = `
 You are an expert fashion stylist AND shopping assistant.
-Your job: convert a user's free-text style prompt into a list of specific, searchable product queries.
-The queries must be product/category focused (NOT full outfits), so a retailer image search returns items.
-
-Rules:
-- Return ONLY valid JSON.
+Convert a user's free-text style prompt into specific, searchable product queries (not full outfits).
+Return ONLY valid JSON.
 - Produce 8 to 12 queries.
-- Each query should be short (3–7 words), product-oriented, and include key attributes from the prompt (style, colors, fabric, vibe).
-- Include a balanced mix: tops, bottoms, outerwear, footwear, and accessories.
-- Avoid generic words like "outfit", "look", "aesthetic" unless paired with product.
-- If user prompt implies an occasion (date night, game, office), tailor the items appropriately.
-- If prompt is vague, infer tasteful defaults.
-- Use gender hint: "${gender}".
-- Retailers available (for context only): ${retailerSites.join(", ")}.
-JSON shape:
-{ "queries": ["query 1", "query 2", ...] }
+- Each query: 3–7 words, product-oriented, includes key attributes from prompt (style, color, fabric, vibe).
+- Include a balanced mix: tops, bottoms, outerwear, footwear, accessories.
+- Avoid generic words like "outfit" unless paired with a product.
+Gender hint: "${gender}"
+Retailer context (do not mention): ${retailerSites.join(", ")}
+JSON shape: { "queries": ["..."] }
 `.trim();
 
   const user = `User prompt: "${prompt}"`;
@@ -219,16 +191,15 @@ JSON shape:
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    temperature,
+    temperature: 0.4,
   });
 
   const content = resp.choices?.[0]?.message?.content?.trim() || "";
-  let parsed: any = null;
 
+  let parsed: any = null;
   try {
     parsed = JSON.parse(content);
   } catch {
-    // salvage: split lines
     const lines = content
       .split("\n")
       .map((s) => s.replace(/^[\s\-\*\d\.\)]+/, "").trim())
@@ -236,16 +207,21 @@ JSON shape:
     parsed = { queries: lines };
   }
 
-  const queries = Array.isArray(parsed?.queries) ? parsed.queries.map(clean).filter(Boolean) : [];
-  const uniq = Array.from(new Set(queries)).slice(0, 12);
+  const arr = Array.isArray(parsed?.queries) ? parsed.queries : [];
 
+  // ✅ force unknown[] → string[] safely
+  const asStrings: string[] = arr
+    .map((x: any) => String(x ?? "").trim())
+    .filter((x: string) => !!x);
+
+  const uniq = Array.from(new Set(asStrings)).slice(0, 12);
   return uniq;
 }
 
 /* =======================
-   Product-ish signals
+   Product-ish boost
 ======================= */
-function productishBoost(url: string) {
+function productishBoost(url: string): number {
   const u = (url || "").toLowerCase();
   if (
     u.includes("/product") ||
@@ -263,15 +239,15 @@ function productishBoost(url: string) {
    API Handler
 ======================= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // prevent caching so prompts don’t “stick”
+  // Prevent caching so results change across prompts
   res.setHeader("Cache-Control", "no-store");
 
   try {
     const input: any = req.method === "POST" ? (req.body || {}) : (req.query || {});
     const qVal = toFirstString(input.q);
     const prompt = clean(input.prompt || qVal || "");
-
     const gender = clean(input.gender || "unisex");
+
     const countVal = toFirstString(input.count);
     const desired = Math.min(Math.max(Number(countVal) || 18, 6), 36);
 
@@ -294,24 +270,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(500).json({ error: "RETAILER_SITES is empty" });
     }
 
-    // Build site filter for CSE
     const siteFilter = sites.map((s) => `site:${s}`).join(" OR ");
 
-    // 1) Make smart queries (OpenAI) with fallback
+    // 1) Smart queries (OpenAI) with fallback
     let queries: string[] = [];
     let querySource: "openai" | "fallback" = "fallback";
 
-    const hasOpenAI = !!clean(process.env.OPENAI_API_KEY);
-    if (hasOpenAI) {
-      try {
-        const q = await aiQueries({ prompt, gender, retailerSites: sites });
-        if (q.length >= 6) {
-          queries = q;
-          querySource = "openai";
-        }
-      } catch {
-        // fall through
+    try {
+      const q = await aiQueries({ prompt, gender, retailerSites: sites });
+      if (q.length >= 6) {
+        queries = q; // ✅ now typed string[]
+        querySource = "openai";
       }
+    } catch {
+      // ignore and fallback
     }
 
     if (!queries.length) {
@@ -325,11 +297,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     for (let qi = 0; qi < queries.length; qi++) {
       const q = queries[qi];
-
-      // Make the search strongly product-item oriented
       const search = `${q} -pinterest -editorial -review -lookbook (${siteFilter})`;
 
-      // fetch extra so strict filtering still leaves enough
       const items = await googleImageSearch(search, perQuery * 3, cseKey, cseCx);
 
       for (let i = 0; i < items.length; i++) {
@@ -355,10 +324,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           continue;
         }
 
-        // hard block socials/noise
         if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
-
-        // must be in whitelist (allow subdomains)
         if (!sites.some((s) => host === s || host.endsWith(s))) continue;
 
         const urlLc = link.toLowerCase();
@@ -370,14 +336,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         let score = 0;
         score += productishBoost(link);
 
-        // reward matching query words (simple)
         const qTokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
         const text = (title + " " + link).toLowerCase();
         for (let t = 0; t < qTokens.length; t++) {
           if (text.includes(qTokens[t])) score += 2;
         }
 
-        // diversity nudges
         if (host.includes("farfetch")) score -= 2;
         if (host.includes("ssense")) score += 1;
 
