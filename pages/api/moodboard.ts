@@ -2,8 +2,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-const VERSION = "moodboard-v3-2026-01-02a"; // <-- use this to verify the deploy is live
+const VERSION = "moodboard-v4-2026-01-02"; // confirms which code is deployed
 
+/* =======================
+   Types
+======================= */
 type ImageResult = {
   imageUrl: string;
   thumbnailUrl?: string;
@@ -25,6 +28,9 @@ type Candidate = {
   score: number;
 };
 
+/* =======================
+   Helpers
+======================= */
 const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
 const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
 const toFirstString = (v: any) => (Array.isArray(v) ? v[0] : v);
@@ -35,6 +41,9 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+/* =======================
+   Filters / Rules
+======================= */
 const EXCLUDE_INURL = [
   "/kids/", "/girls/", "/boys/", "/baby/",
   "/help/", "/blog/", "/story/", "/stories/", "/press/",
@@ -44,11 +53,20 @@ const EXCLUDE_INURL = [
 ];
 
 const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
-const BLOCKED_DOMAINS = ["pinterest.", "pinimg.com", "twitter.", "x.com", "facebook.", "reddit.", "tumblr.", "wikipedia."];
 
-// Hotlink risk domains (prefer thumbs when available)
+const BLOCKED_DOMAINS = [
+  "pinterest.", "pinimg.com",
+  "twitter.", "x.com",
+  "facebook.", "reddit.", "tumblr.",
+  "wikipedia.",
+];
+
+// Hotlink risk domains (prefer thumbnails when available)
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
+/* =======================
+   Category guesser (balance)
+======================= */
 type Category = "tops" | "bottoms" | "outerwear" | "shoes" | "accessories" | "other";
 
 function guessCategory(q: string, title: string, url: string): Category {
@@ -62,11 +80,12 @@ function guessCategory(q: string, title: string, url: string): Category {
   return "other";
 }
 
-/** -----------------------
- * Simple cache (per Vercel instance)
- * ---------------------- */
+/* =======================
+   Cache (per Vercel instance)
+======================= */
 type CacheVal = { at: number; data: any };
-const CACHE_TTL_MS = 60_000; // 60s
+const CACHE_TTL_MS = 60_000; // 60 seconds
+
 const globalAny = globalThis as any;
 if (!globalAny.__MOODBOARD_CACHE) globalAny.__MOODBOARD_CACHE = new Map<string, CacheVal>();
 const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE;
@@ -84,10 +103,10 @@ function setCache(key: string, data: any) {
   cache.set(key, { at: Date.now(), data });
 }
 
-/** -----------------------
- * Google CSE single call (no pagination)
- * ---------------------- */
-async function googleImageSearchOnce(q: string, key: string, cx: string, num: number): Promise<{ items: any[]; status: number }> {
+/* =======================
+   Google CSE (single request only)
+======================= */
+async function googleImageSearchOnce(q: string, key: string, cx: string, num: number) {
   const url = new URL("https://www.googleapis.com/customsearch/v1");
   url.searchParams.set("q", q);
   url.searchParams.set("searchType", "image");
@@ -101,7 +120,7 @@ async function googleImageSearchOnce(q: string, key: string, cx: string, num: nu
 
   const res = await fetch(url.toString());
   const status = res.status;
-  if (!res.ok) return { items: [], status };
+  if (!res.ok) return { items: [] as any[], status };
 
   const data = await res.json();
   const items = (data?.items || []) as any[];
@@ -110,15 +129,21 @@ async function googleImageSearchOnce(q: string, key: string, cx: string, num: nu
 
 function productishBoost(url: string): number {
   const u = (url || "").toLowerCase();
-  if (u.includes("/product") || u.includes("/products") || u.includes("/p/") || u.includes("/item/") || u.includes("/shop/") || u.includes("/dp/") || u.includes("/sku/")) {
-    return 10;
-  }
-  return 0;
+  return (
+    u.includes("/product") ||
+    u.includes("/products") ||
+    u.includes("/p/") ||
+    u.includes("/item/") ||
+    u.includes("/shop/") ||
+    u.includes("/dp/") ||
+    u.includes("/sku/")
+  ) ? 10 : 0;
 }
 
-/** -----------------------
- * OpenAI -> EXACTLY 6 queries (hard cap)
- * ---------------------- */
+/* =======================
+   OpenAI → EXACTLY 6 queries
+   (TS-safe: returns string[])
+======================= */
 async function aiQueries(prompt: string, gender: string): Promise<string[]> {
   const apiKey = clean(process.env.OPENAI_API_KEY);
   if (!apiKey) return [];
@@ -146,11 +171,15 @@ Gender hint: "${gender}"
   });
 
   const content = resp.choices?.[0]?.message?.content?.trim() || "";
+
   try {
-    const parsed = JSON.parse(content);
-    const arr = Array.isArray(parsed?.queries) ? parsed.queries : [];
-    const qs = arr.map((x: any) => String(x ?? "").trim()).filter(Boolean);
-    return Array.from(new Set(qs)).slice(0, 6);
+    const parsed: any = JSON.parse(content);
+    const arr: any[] = Array.isArray(parsed?.queries) ? parsed.queries : [];
+    const qs: string[] = arr
+      .map((x: any) => String(x ?? "").trim())
+      .filter((s: string) => s.length > 0);
+
+    return Array.from(new Set<string>(qs)).slice(0, 6);
   } catch {
     return [];
   }
@@ -167,17 +196,20 @@ function fallbackQueries(prompt: string, gender: string): string[] {
   const P = p ? ` ${p}` : "";
 
   return [
-    `black boots${P} ${g}`,
-    `tailored blazer${P} ${g}`,
-    `dress shirt${P} ${g}`,
-    `tailored trousers${P} ${g}`,
-    `bomber jacket${P} ${g}`,
-    `leather belt${P} ${g}`,
+    `boots${P} ${g}`,
+    `blazer${P} ${g}`,
+    `shirt${P} ${g}`,
+    `trousers${P} ${g}`,
+    `jacket${P} ${g}`,
+    `belt${P} ${g}`,
   ].slice(0, 6);
 }
 
+/* =======================
+   Handler
+======================= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Short CDN caching reduces repeat calls
+  // reduce repeated hits to Google
   res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=60");
 
   const input: any = req.method === "POST" ? (req.body || {}) : (req.query || {});
@@ -198,17 +230,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
 
-  const cacheKey = `v3:${VERSION}:${gender}:${prompt.toLowerCase()}`;
+  // cache by prompt+gender
+  const cacheKey = `v4:${VERSION}:${gender}:${prompt.toLowerCase()}`;
   const cached = getCache(cacheKey);
   if (cached) return res.status(200).json(cached);
 
-  // HARD LIMITS to avoid 429:
-  const MAX_SITE_GROUPS = 2;   // <-- should never show groupsTried > 2
+  // hard caps to avoid 429 explosions
+  const MAX_SITE_GROUPS = 2;     // should never exceed 2
   const GROUP_SIZE = 4;
   const siteGroups = chunk(sites, GROUP_SIZE)
     .slice(0, MAX_SITE_GROUPS)
     .map((g) => g.map((s) => `site:${s}`).join(" OR "));
 
+  // Queries
   let queries: string[] = [];
   let querySource: "openai" | "fallback" = "fallback";
 
@@ -224,8 +258,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const candidates: Candidate[] = [];
   const fetchDebug: Record<string, any> = {};
   let saw429 = false;
+  let saw403 = false;
 
-  // Only 6 queries * 2 groups = 12 requests max
+  // 6 queries * 2 groups => max 12 requests
   outer: for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi];
     fetchDebug[q] = { groupsTried: 0, statusCodes: [] as number[], itemsSeen: 0 };
@@ -240,17 +275,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       fetchDebug[q].statusCodes.push(status);
       fetchDebug[q].itemsSeen += items.length;
 
-      if (status === 429) {
-        saw429 = true;
-        break outer; // <-- STOP immediately (no hammering)
-      }
-      if (status === 403) {
-        // permissions/billing issue
-        break outer;
-      }
+      // stop immediately on rate limit / forbidden
+      if (status === 429) { saw429 = true; break outer; }
+      if (status === 403) { saw403 = true; break outer; }
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
+
         const img: string = String((it as any)?.link ?? "");
         const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
         const link: string = String((it as any)?.image?.contextLink ?? "");
@@ -265,13 +296,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         const urlLc = link.toLowerCase();
         const titleLc = title.toLowerCase();
-        if (containsAny(urlLc, EXCLUDE_INURL)) continue;
-        if (containsAny(titleLc, EXCLUDE_TERMS)) continue;
+        if (EXCLUDE_INURL.some((x) => urlLc.includes(x))) continue;
+        if (EXCLUDE_TERMS.some((x) => titleLc.includes(x))) continue;
 
         let score = productishBoost(link);
         const tokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
         const text = (title + " " + link).toLowerCase();
         for (let t = 0; t < tokens.length; t++) if (text.includes(tokens[t])) score += 2;
+
+        // mild domain tuning
+        if (host.includes("farfetch")) score -= 2;
+        if (host.includes("ssense")) score += 1;
+        if (host.includes("nepenthes")) score += 1;
 
         candidates.push({ title, link, img, thumb, host, query: q, score });
       }
@@ -280,7 +316,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   candidates.sort((a, b) => b.score - a.score);
 
-  // selection w/ category caps (prevents "all pants")
+  // Output balance (avoid only pants)
   const desired = 18;
   const domainCount = new Map<string, number>();
   const seen = new Set<string>();
@@ -331,12 +367,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       querySource,
       queries,
       totalCandidates: candidates.length,
-      saw429,
       groupsMaxExpected: MAX_SITE_GROUPS,
+      saw429,
+      saw403,
       fetch: fetchDebug,
       note: saw429
-        ? "Google CSE is rate-limiting (429). This build hard-limits requests + stops immediately on 429. You still need higher quota / billing in Google Cloud for consistent results."
-        : undefined,
+        ? "Google CSE is rate-limiting (429). This build stops immediately on 429 and uses caching, but you still need higher quota/billing for consistent results."
+        : saw403
+          ? "Google CSE returned 403 (forbidden). Check API key, billing, or that Custom Search API is enabled in the correct Google Cloud project."
+          : undefined,
     },
   };
 
