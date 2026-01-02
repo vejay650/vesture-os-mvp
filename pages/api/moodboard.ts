@@ -30,7 +30,7 @@ const clean = (s: any) => (typeof s === "string" ? s.trim() : "");
 const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
 
 const containsAny = (hay: string, needles: string[]) => {
-  const lc = hay.toLowerCase();
+  const lc = (hay || "").toLowerCase();
   for (let i = 0; i < needles.length; i++) {
     if (lc.includes(needles[i].toLowerCase())) return true;
   }
@@ -68,15 +68,21 @@ const HOTLINK_RISK = [
    Sentence → Item Queries
 ======================= */
 function buildItemQueries(prompt: string, gender: string) {
-  const lc = prompt.toLowerCase();
+  const lc = (prompt || "").toLowerCase();
 
-  const isDate = /(date|night out|evening|dinner|drinks)/i.test(lc);
-  const isGame = /(game|stadium|arena|courtside)/i.test(lc);
+  const isDate = /(date|date night|night out|evening|dinner|drinks|party)/i.test(lc);
+  const isGame = /(game|stadium|arena|courtside|match)/i.test(lc);
 
+  const gLc = (gender || "").toLowerCase();
   const g =
-    gender.includes("women") ? "women" :
-    gender.includes("men") ? "men" :
+    gLc.includes("women") || gLc.includes("female") ? "women" :
+    gLc.includes("men") || gLc.includes("male") ? "men" :
     "unisex";
+
+  // A little extra understanding for common fashion prompts
+  const isOversized = /(oversized|baggy|wide)/i.test(lc);
+  const isJapanese = /(japanese|tokyo|harajuku)/i.test(lc);
+  const isStreetwear = /(streetwear|street|urban)/i.test(lc);
 
   if (isDate && isGame) {
     return [
@@ -99,6 +105,18 @@ function buildItemQueries(prompt: string, gender: string) {
     ];
   }
 
+  // If user says "oversized japanese streetwear"
+  if (isOversized && (isJapanese || isStreetwear)) {
+    return [
+      `oversized jacket ${g} streetwear`,
+      `wide leg trousers ${g}`,
+      `oversized graphic tee ${g}`,
+      `technical sneakers ${g}`,
+      `crossbody bag ${g}`
+    ];
+  }
+
+  // General fallback
   return [
     `clean knit top ${g}`,
     `straight leg jeans ${g}`,
@@ -149,20 +167,28 @@ async function googleImageSearch(
 ======================= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const body: any = req.method === "POST" ? req.body : req.query;
+    // Support POST (body) and GET (query)
+    const input: any = req.method === "POST" ? (req.body || {}) : (req.query || {});
 
-    const prompt = clean(body.prompt || "");
-    const gender = clean(body.gender || "unisex");
-    const desired = Math.min(Math.max(Number(body.count) || 18, 6), 36);
+    // ✅ Extra-compatible prompt extraction:
+    // - accepts prompt OR q
+    // - handles q arrays (?q=a&q=b)
+    const qVal = Array.isArray(input.q) ? input.q[0] : input.q;
+    const prompt = clean(input.prompt || qVal || "");
+
+    const gender = clean(input.gender || "unisex");
+
+    const countVal = Array.isArray(input.count) ? input.count[0] : input.count;
+    const desired = Math.min(Math.max(Number(countVal) || 18, 6), 36);
 
     if (!prompt) {
-      return res.status(400).json({ error: "Missing prompt" });
+      return res.status(400).json({ error: "Missing prompt (send 'prompt' or 'q')" });
     }
 
-    const key = process.env.GOOGLE_CSE_KEY;
-    const cx = process.env.GOOGLE_CSE_ID;
+    const key = clean(process.env.GOOGLE_CSE_KEY);
+    const cx = clean(process.env.GOOGLE_CSE_ID);
     if (!key || !cx) {
-      return res.status(500).json({ error: "Missing Google CSE env vars" });
+      return res.status(500).json({ error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID" });
     }
 
     const sites = clean(process.env.RETAILER_SITES || "")
@@ -170,23 +196,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .map(normHost)
       .filter(Boolean);
 
+    if (!sites.length) {
+      return res.status(500).json({ error: "RETAILER_SITES is empty" });
+    }
+
     const siteFilter = sites.map(s => `site:${s}`).join(" OR ");
 
     const queries = buildItemQueries(prompt, gender);
-    const perQuery = Math.ceil(desired / queries.length);
+    const perQuery = Math.max(6, Math.ceil(desired / queries.length));
 
     let candidates: Candidate[] = [];
 
     for (const q of queries) {
-      const search = `${q} -pinterest -editorial (${siteFilter})`;
+      const search = `${q} -pinterest -editorial -review (${siteFilter})`;
       const items = await googleImageSearch(search, perQuery * 3, key, cx);
 
       for (const it of items) {
-        // ✅ HARD TypeScript-safe extraction
+        // ✅ HARD TypeScript-safe extraction (prevents unknown→string errors on Vercel)
         const img: string = String((it as any)?.link ?? "");
         const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
         const link: string = String(
           (it as any)?.image?.contextLink ??
+          (it as any)?.image?.context ??
           (it as any)?.displayLink ??
           ""
         );
@@ -210,15 +241,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // Rank + diversify
+    // Score + rank
     const scored = candidates
-      .map(c => ({
-        ...c,
-        score: (c.host.includes("farfetch") ? -2 : 0) + (c.link.includes("/product") ? 8 : 0)
-      }))
-      .sort((a, b) => b.score - a.score);
+      .map(c => {
+        const productBoost = /\/product|\/products|\/p\/|\/item\/|\/shop\/|\/sku\//i.test(c.link) ? 8 : 0;
+        const farfetchPenalty = c.host.includes("farfetch") ? -2 : 0;
+        return { ...c, score: productBoost + farfetchPenalty };
+      })
+      .sort((a, b) => (b.score as number) - (a.score as number));
 
-    const domainCap = 3;
+    // Diversify results by domain
+    const domainCap = desired <= 12 ? 2 : 3;
     const domainCount = new Map<string, number>();
     const seen = new Set<string>();
     const output: ImageResult[] = [];
@@ -227,9 +260,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const count = domainCount.get(c.host) || 0;
       if (count >= domainCap) continue;
 
-      const key = `${c.link}::${c.img}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const dedupeKey = `${c.link}::${c.img}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
 
       const risky = HOTLINK_RISK.some(d => c.host.endsWith(d));
       const imageUrl = risky && c.thumb ? c.thumb : c.img;
@@ -251,7 +284,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({
       images: output,
-      source: "google-cse"
+      source: "google-cse",
+      debug: {
+        prompt,
+        desired,
+        queries,
+        domainCap,
+        domainCounts: Object.fromEntries(domainCount.entries())
+      }
     });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Unexpected error" });
