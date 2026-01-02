@@ -82,49 +82,57 @@ function guessCategory(q: string, title: string, url: string): Category {
   if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|denim jacket|leather jacket)/.test(t)) return "outerwear";
   if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt)/.test(t)) return "bottoms";
   if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse)/.test(t)) return "tops";
-
   return "other";
 }
 
 /* =======================
-   Google CSE image search
-   - returns items + status for debug
+   Simple in-memory cache (per Vercel instance)
 ======================= */
-async function googleImageSearch(q: string, count: number, key: string, cx: string): Promise<{ items: any[]; status: number }> {
-  const results: any[] = [];
-  let start = 1;
-  let lastStatus = 200;
+type CacheVal = { at: number; data: any };
+const CACHE_TTL_MS = 60_000; // 60s
+const globalAny = globalThis as any;
+if (!globalAny.__MOODBOARD_CACHE) globalAny.__MOODBOARD_CACHE = new Map<string, CacheVal>();
+const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE;
 
-  while (results.length < count && start <= 91) {
-    const url = new URL("https://www.googleapis.com/customsearch/v1");
-    url.searchParams.set("q", q);
-    url.searchParams.set("searchType", "image");
-    url.searchParams.set("num", String(Math.min(10, count - results.length)));
-    url.searchParams.set("start", String(start));
-    url.searchParams.set("key", key);
-    url.searchParams.set("cx", cx);
-    url.searchParams.set("imgType", "photo");
-    url.searchParams.set("imgSize", "large");
-    url.searchParams.set("safe", "active");
-
-    const res = await fetch(url.toString());
-    lastStatus = res.status;
-
-    if (!res.ok) break;
-
-    const data = await res.json();
-    const items = (data?.items || []) as any[];
-    if (!items.length) break;
-
-    results.push(...items);
-    start += items.length;
+function getCache(key: string): any | null {
+  const v = cache.get(key);
+  if (!v) return null;
+  if (Date.now() - v.at > CACHE_TTL_MS) {
+    cache.delete(key);
+    return null;
   }
-
-  return { items: results, status: lastStatus };
+  return v.data;
+}
+function setCache(key: string, data: any) {
+  cache.set(key, { at: Date.now(), data });
 }
 
 /* =======================
-   Fallback queries
+   Google CSE image search (single call, no pagination)
+======================= */
+async function googleImageSearchOnce(q: string, key: string, cx: string, num: number): Promise<{ items: any[]; status: number }> {
+  const url = new URL("https://www.googleapis.com/customsearch/v1");
+  url.searchParams.set("q", q);
+  url.searchParams.set("searchType", "image");
+  url.searchParams.set("num", String(Math.min(10, Math.max(1, num))));
+  url.searchParams.set("start", "1");
+  url.searchParams.set("key", key);
+  url.searchParams.set("cx", cx);
+  url.searchParams.set("imgType", "photo");
+  url.searchParams.set("imgSize", "large");
+  url.searchParams.set("safe", "active");
+
+  const res = await fetch(url.toString());
+  const status = res.status;
+
+  if (!res.ok) return { items: [], status };
+  const data = await res.json();
+  const items = (data?.items || []) as any[];
+  return { items, status };
+}
+
+/* =======================
+   Fallback queries (6 max)
 ======================= */
 function fallbackQueries(prompt: string, gender: string): string[] {
   const gLc = (gender || "").toLowerCase();
@@ -137,67 +145,52 @@ function fallbackQueries(prompt: string, gender: string): string[] {
   const P = p ? ` ${p}` : "";
 
   return [
-    `jacket${P} ${g}`,
-    `shirt${P} ${g}`,
-    `pants${P} ${g}`,
     `boots${P} ${g}`,
-    `bag${P} ${g}`,
+    `blazer${P} ${g}`,
+    `shirt${P} ${g}`,
+    `trousers${P} ${g}`,
+    `jacket${P} ${g}`,
+    `belt${P} ${g}`,
   ];
 }
 
 /* =======================
-   OpenAI → smart product queries
+   OpenAI → 6 strong product queries
 ======================= */
-async function aiQueries(opts: { prompt: string; gender: string; retailerSites: string[] }): Promise<string[]> {
-  const { prompt, gender, retailerSites } = opts;
-
+async function aiQueries(prompt: string, gender: string): Promise<string[]> {
   const apiKey = clean(process.env.OPENAI_API_KEY);
   if (!apiKey) return [];
-
   const client = new OpenAI({ apiKey });
   const model = clean(process.env.OPENAI_MODEL) || "gpt-4o-mini";
 
   const system = `
-You are an expert fashion stylist AND shopping assistant.
-Convert a user's free-text style prompt into specific, searchable PRODUCT queries (not full outfits).
-Return ONLY valid JSON.
-- Produce 10 to 12 queries.
-- Each query: 3–7 words, product-oriented, include key attributes from prompt.
-- Force category coverage: at least 2 tops, 2 bottoms, 2 outerwear, 2 shoes, 1 accessory.
+Convert the user's prompt into EXACTLY 6 product-style search queries.
+Rules:
+- 3–7 words each
+- Product-focused (boots, blazer, trousers, shirt, jacket, bag, belt, etc.)
+- Cover categories: shoes, tops, bottoms, outerwear, accessory (at least 1 each)
+Return ONLY valid JSON: { "queries": ["...", "...", ...] }
 Gender hint: "${gender}"
-JSON shape: { "queries": ["..."] }
 `.trim();
-
-  const user = `User prompt: "${prompt}"`;
 
   const resp = await client.chat.completions.create({
     model,
     messages: [
       { role: "system", content: system },
-      { role: "user", content: user },
+      { role: "user", content: `Prompt: "${prompt}"` },
     ],
-    temperature: 0.35,
+    temperature: 0.3,
   });
 
   const content = resp.choices?.[0]?.message?.content?.trim() || "";
-
-  let parsed: any = null;
   try {
-    parsed = JSON.parse(content);
+    const parsed = JSON.parse(content);
+    const arr = Array.isArray(parsed?.queries) ? parsed.queries : [];
+    const qs = arr.map((x: any) => String(x ?? "").trim()).filter(Boolean);
+    return Array.from(new Set(qs)).slice(0, 6);
   } catch {
-    const lines = content
-      .split("\n")
-      .map((s) => s.replace(/^[\s\-\*\d\.\)]+/, "").trim())
-      .filter(Boolean);
-    parsed = { queries: lines };
+    return [];
   }
-
-  const arr = Array.isArray(parsed?.queries) ? parsed.queries : [];
-  const asStrings: string[] = arr
-    .map((x: any) => String(x ?? "").trim())
-    .filter((x: string) => !!x);
-
-  return Array.from(new Set(asStrings)).slice(0, 12);
 }
 
 /* =======================
@@ -221,16 +214,15 @@ function productishBoost(url: string): number {
    API Handler
 ======================= */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  res.setHeader("Cache-Control", "no-store");
+  // short CDN cache helps reduce repeat hits; still fresh
+  res.setHeader("Cache-Control", "s-maxage=30, stale-while-revalidate=60");
 
   try {
     const input: any = req.method === "POST" ? (req.body || {}) : (req.query || {});
     const qVal = toFirstString(input.q);
     const prompt = clean(input.prompt || qVal || "");
     const gender = clean(input.gender || "unisex");
-
-    const countVal = toFirstString(input.count);
-    const desired = Math.min(Math.max(Number(countVal) || 18, 6), 36);
+    const desired = 18;
 
     if (!prompt) return res.status(400).json({ error: "Missing prompt (send 'prompt' or 'q')" });
 
@@ -245,63 +237,58 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
 
-    // ✅ crucial: group site filters so query isn't too long
-    const siteGroups = chunk(sites, 4).map((g) => g.map((s) => `site:${s}`).join(" OR "));
+    const cacheKey = `v1:${gender}:${prompt.toLowerCase()}`;
+    const cached = getCache(cacheKey);
+    if (cached) return res.status(200).json(cached);
 
-    // 1) Queries
+    // group site filters but only try top 2 groups to reduce calls
+    const siteGroups = chunk(sites, 4).slice(0, 2).map((g) => g.map((s) => `site:${s}`).join(" OR "));
+
     let queries: string[] = [];
     let querySource: "openai" | "fallback" = "fallback";
 
-    try {
-      const q = await aiQueries({ prompt, gender, retailerSites: sites });
-      if (q.length >= 8) {
-        queries = q;
-        querySource = "openai";
-      }
-    } catch {}
-
-    if (!queries.length) {
+    const aq = await aiQueries(prompt, gender);
+    if (aq.length === 6) {
+      queries = aq;
+      querySource = "openai";
+    } else {
       queries = fallbackQueries(prompt, gender);
       querySource = "fallback";
     }
 
-    // 2) Fetch candidates
-    const perQuery = Math.max(6, Math.ceil(desired / Math.min(queries.length, 8)));
     const candidates: Candidate[] = [];
+    const fetchDebug: Record<string, any> = {};
+    let saw429 = false;
 
-    const debugFetch: Record<string, any> = {};
-
+    // Only 6 queries * 2 groups = 12 google requests max
     for (let qi = 0; qi < queries.length; qi++) {
       const q = queries[qi];
-      debugFetch[q] = { groupsTried: 0, statusCodes: [] as number[], itemsSeen: 0 };
+      fetchDebug[q] = { statusCodes: [] as number[], itemsSeen: 0, groupsTried: 0 };
 
       for (let gi = 0; gi < siteGroups.length; gi++) {
         const groupFilter = siteGroups[gi];
-        debugFetch[q].groupsTried += 1;
+        fetchDebug[q].groupsTried += 1;
 
-        const search = `${q} product photo -pinterest -editorial -review -lookbook (${groupFilter})`;
+        const search = `${q} product photo -pinterest -editorial -review (${groupFilter})`;
+        const { items, status } = await googleImageSearchOnce(search, cseKey, cseCx, 10);
+        fetchDebug[q].statusCodes.push(status);
+        fetchDebug[q].itemsSeen += items.length;
 
-        const { items, status } = await googleImageSearch(search, perQuery * 3, cseKey, cseCx);
-        debugFetch[q].statusCodes.push(status);
-        debugFetch[q].itemsSeen += items.length;
+        if (status === 429) {
+          saw429 = true;
+          continue;
+        }
 
         for (let i = 0; i < items.length; i++) {
           const it = items[i];
-
           const img: string = String((it as any)?.link ?? "");
           const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
           const link: string = String((it as any)?.image?.contextLink ?? "");
           const title: string = String((it as any)?.title ?? "");
-
           if (!img || !link) continue;
 
           let host = "";
-          try {
-            host = normHost(new URL(link).hostname);
-          } catch {
-            continue;
-          }
-
+          try { host = normHost(new URL(link).hostname); } catch { continue; }
           if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
           if (!sites.some((s) => host === s || host.endsWith(s))) continue;
 
@@ -310,14 +297,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (containsAny(urlLc, EXCLUDE_INURL)) continue;
           if (containsAny(titleLc, EXCLUDE_TERMS)) continue;
 
-          let score = 0;
-          score += productishBoost(link);
-
-          const qTokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+          let score = productishBoost(link);
+          const tokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
           const text = (title + " " + link).toLowerCase();
-          for (let t = 0; t < qTokens.length; t++) {
-            if (text.includes(qTokens[t])) score += 2;
-          }
+          for (let t = 0; t < tokens.length; t++) if (text.includes(tokens[t])) score += 2;
 
           if (host.includes("farfetch")) score -= 2;
           if (host.includes("ssense")) score += 1;
@@ -325,56 +308,44 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
           candidates.push({ title, link, img, thumb, host, query: q, score });
         }
-
-        // stop early if we already have plenty
-        if (candidates.length >= desired * 6) break;
       }
     }
 
     candidates.sort((a, b) => b.score - a.score);
 
-    // 3) Diversify + category balance
-    const perDomainCap = desired <= 12 ? 2 : 3;
-    const farfetchCap = desired <= 12 ? 2 : 3;
-
-    const catCaps: Record<Category, number> = {
-      tops: 5,
-      bottoms: 5,
-      outerwear: 4,
-      shoes: 3,
-      accessories: 3,
-      other: 3,
-    };
-    const catCounts = new Map<Category, number>();
+    // balance
+    const perDomainCap = 3;
+    const farfetchCap = 3;
     const domainCount = new Map<string, number>();
+    const catCounts = new Map<Category, number>();
+    const catCaps: Record<Category, number> = { tops: 5, bottoms: 5, outerwear: 4, shoes: 4, accessories: 3, other: 3 };
     const seen = new Set<string>();
-    const output: ImageResult[] = [];
+    const out: ImageResult[] = [];
     let farfetchCount = 0;
 
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-
-      const domCount = domainCount.get(c.host) || 0;
-      if (domCount >= perDomainCap) continue;
+      const dc = domainCount.get(c.host) || 0;
+      if (dc >= perDomainCap) continue;
       if (c.host.includes("farfetch") && farfetchCount >= farfetchCap) continue;
 
-      const dedupeKey = `${c.link}::${c.img}`;
-      if (seen.has(dedupeKey)) continue;
+      const k = `${c.link}::${c.img}`;
+      if (seen.has(k)) continue;
 
       const cat = guessCategory(c.query, c.title, c.link);
       const cc = catCounts.get(cat) || 0;
       if (cc >= (catCaps[cat] ?? 3)) continue;
 
-      seen.add(dedupeKey);
+      seen.add(k);
 
       const risky = HOTLINK_RISK.some((d) => c.host.endsWith(d));
       const imageUrl = risky && c.thumb ? c.thumb : c.img;
 
-      domainCount.set(c.host, domCount + 1);
+      domainCount.set(c.host, dc + 1);
       catCounts.set(cat, cc + 1);
       if (c.host.includes("farfetch")) farfetchCount++;
 
-      output.push({
+      out.push({
         imageUrl,
         thumbnailUrl: c.thumb || undefined,
         sourceUrl: c.link,
@@ -385,25 +356,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         category: cat,
       });
 
-      if (output.length >= desired) break;
+      if (out.length >= desired) break;
     }
 
-    return res.status(200).json({
-      images: output,
+    const response = {
+      images: out,
       source: "google-cse",
       debug: {
         prompt,
-        desired,
         querySource,
         queries,
-        farfetchCap,
-        perDomainCap,
         totalCandidates: candidates.length,
+        saw429,
         domainCounts: Object.fromEntries(domainCount.entries()),
         categoryCounts: Object.fromEntries(Array.from(catCounts.entries())),
-        fetch: debugFetch,
+        fetch: fetchDebug,
+        note: saw429
+          ? "Google CSE is rate-limiting (429). Reduced calls + caching enabled. If still empty, increase quota or use fewer site groups."
+          : undefined,
       },
-    });
+    };
+
+    setCache(cacheKey, response);
+    return res.status(200).json(response);
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || "Unexpected error" });
   }
