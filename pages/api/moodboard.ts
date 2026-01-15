@@ -2,7 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-const VERSION = "moodboard-v7-hardcap-farfetch-rerank-2026-01-14";
+const VERSION = "moodboard-v8-pasteall-2026-01-14";
 
 /* =======================
    Types
@@ -50,10 +50,13 @@ function safeJsonParse(txt: string): any | null {
   try {
     return JSON.parse(txt);
   } catch {
-    // salvage JSON if model wrapped it
     const m = txt.match(/\{[\s\S]*\}/);
     if (m) {
-      try { return JSON.parse(m[0]); } catch { /* ignore */ }
+      try {
+        return JSON.parse(m[0]);
+      } catch {
+        return null;
+      }
     }
     return null;
   }
@@ -69,7 +72,7 @@ const BLOCKED_DOMAINS = [
   "wikipedia."
 ];
 
-// Strongly exclude non-product / nav / editorial pages
+// Exclude non-product / nav / editorial pages
 const EXCLUDE_INURL = [
   "/kids/", "/girls/", "/boys/", "/baby/",
   "/help/", "/support/", "/customer-service",
@@ -86,7 +89,7 @@ const EXCLUDE_INURL = [
 
 const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
 
-// Some brands hotlink / block image URLs. If thumb exists, prefer it.
+// Brands that often hotlink/block full images; thumb is safer
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
 /* =======================
@@ -109,7 +112,7 @@ function guessCategory(q: string, title: string, url: string): Category {
 function productishBoost(url: string): number {
   const u = (url || "").toLowerCase();
 
-  // HARD penalty for nav/editorial pages
+  // nav/editorial penalty
   if (
     u.includes("/pages/") ||
     u.includes("/page/") ||
@@ -122,7 +125,7 @@ function productishBoost(url: string): number {
     u.includes("/lookbook")
   ) return -40;
 
-  // Strong boost for product-ish urls
+  // product-ish boost
   if (
     u.includes("/product") ||
     u.includes("/products") ||
@@ -142,8 +145,8 @@ type CacheVal = { at: number; data: any };
 const CACHE_TTL_MS = 60_000;
 
 const globalAny = globalThis as any;
-if (!globalAny.__MOODBOARD_CACHE_V7) globalAny.__MOODBOARD_CACHE_V7 = new Map<string, CacheVal>();
-const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE_V7;
+if (!globalAny.__MOODBOARD_CACHE_V8) globalAny.__MOODBOARD_CACHE_V8 = new Map<string, CacheVal>();
+const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE_V8;
 
 function getCache(key: string): any | null {
   const v = cache.get(key);
@@ -218,6 +221,7 @@ Prompt: "${prompt}"
     model,
     messages: [{ role: "system", content: system }],
     temperature: 0.15,
+    max_tokens: 400,
   });
 
   const content = resp.choices?.[0]?.message?.content?.trim() || "";
@@ -248,39 +252,42 @@ function fallbackQueries(prompt: string, gender: string): string[] {
 }
 
 /* =======================
-   OpenAI: reranker (HARDENED)
+   OpenAI: reranker (FIXED)
 ======================= */
-async function aiRerank(prompt: string, gender: string, items: Candidate[]): Promise<{ ids: string[]; ok: boolean; reason?: string }> {
+async function aiRerank(
+  prompt: string,
+  gender: string,
+  items: Candidate[]
+): Promise<{ ids: string[]; ok: boolean; reason?: string; raw?: string }> {
   const apiKey = clean(process.env.OPENAI_API_KEY);
   if (!apiKey) return { ids: [], ok: false, reason: "missing OPENAI_API_KEY" };
 
-  const shortlist = items.slice(0, 60);
-  if (shortlist.length < 6) return { ids: [], ok: false, reason: "not enough candidates" };
+  // smaller payload -> more reliable output
+  const shortlist = items.slice(0, 30);
+  if (shortlist.length < 8) return { ids: [], ok: false, reason: "not enough candidates" };
 
   const client = new OpenAI({ apiKey });
   const model = clean(process.env.OPENAI_MODEL) || "gpt-4o-mini";
 
   const payload = shortlist.map((c) => ({
     id: c.id,
-    title: c.title,
-    url: c.link,
+    title: c.title.slice(0, 120),
     host: c.host,
-    intendedCategory: c.intendedCategory,
-    guessedCategory: c.guessedCategory,
-    query: c.query,
+    url: c.link.slice(0, 180),
+    cat: c.guessedCategory,
+    q: c.query.slice(0, 80),
   }));
 
   const system = `
 Return ONLY valid JSON:
-{ "ranked_ids": ["id1","id2", "..."] }
+{ "ranked_ids": ["id1","id2", ...] }
 
-You are a fashion retail reranker.
-Rank by how well each candidate matches the prompt and vibe.
-Rules:
-- Prefer real product pages; penalize navigation/editorial pages.
-- Keep diversity: shoes/bottoms/tops/outerwear/accessories should appear early.
-- If prompt includes a specific item (boots), shoes can lead but should not dominate.
-- Strongly penalize Farfetch unless it's an exceptional match.
+Rank candidates by best match to the prompt and vibe.
+Important:
+- Return AT LEAST 18 ids if possible, up to 30.
+- Diversity: shoes/bottoms/tops/outerwear/accessories should appear early.
+- Penalize nav/editorial pages (shop, collections, blog).
+- Strongly penalize farfetch unless it's a perfect match.
 
 Gender hint: "${gender}"
 Prompt: "${prompt}"
@@ -292,15 +299,19 @@ Candidates: ${JSON.stringify(payload)}
       model,
       messages: [{ role: "system", content: system }],
       temperature: 0.1,
+      max_tokens: 900,
     });
 
     const content = resp.choices?.[0]?.message?.content?.trim() || "";
     const parsed = safeJsonParse(content);
+
     const arr: any[] = Array.isArray(parsed?.ranked_ids) ? parsed.ranked_ids : [];
     const ids: string[] = arr.map((x: any) => String(x ?? "").trim()).filter(Boolean);
 
-    if (ids.length < 8) return { ids: [], ok: false, reason: "rerank returned too few ids" };
-    return { ids, ok: true };
+    // ✅ accept shorter lists so rerank actually activates
+    if (ids.length >= 5) return { ids, ok: true, raw: content };
+
+    return { ids, ok: false, reason: `rerank ids too short (${ids.length})`, raw: content };
   } catch (e: any) {
     return { ids: [], ok: false, reason: e?.message || "rerank error" };
   }
@@ -330,18 +341,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
 
-  const cacheKey = `v7:${VERSION}:${gender}:${prompt.toLowerCase()}`;
+  const cacheKey = `v8:${VERSION}:${gender}:${prompt.toLowerCase()}`;
   const cached = getCache(cacheKey);
   if (cached) return res.status(200).json(cached);
 
-  // Search MORE of your list (first 20 sites) to avoid farfetch traps
+  // Search first 20 sites (5 groups x 4 sites)
   const GROUP_SIZE = 4;
-  const MAX_SITE_GROUPS = 5; // 5 groups * 4 sites = first 20 sites
+  const MAX_SITE_GROUPS = 5;
   const siteGroups = chunk(sites, GROUP_SIZE)
     .slice(0, MAX_SITE_GROUPS)
     .map((g) => g.map((s) => `site:${s}`).join(" OR "));
 
-  // Build balanced queries
+  // Queries
   let queries: string[] = [];
   let querySource: "openai" | "fallback" = "fallback";
 
@@ -402,16 +413,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (EXCLUDE_TERMS.some((x) => titleLc.includes(x))) continue;
 
         let score = 0;
-
-        // product preference
         score += productishBoost(link);
 
-        // token overlap
         const tokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
         const text = (title + " " + link).toLowerCase();
         for (let t = 0; t < tokens.length; t++) if (text.includes(tokens[t])) score += 2;
 
-        // HARD push away from farfetch dominance
+        // push away farfetch
         if (host.includes("farfetch")) score -= 12;
 
         // small boosts for good sites
@@ -423,7 +431,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const guessed = guessCategory(q, title, link);
         if (guessed === intendedCategory) score += 5;
 
-        // kill generic shop pages by title
         if (/(^shop\b|homepage|new arrivals|sale$)/i.test(title)) score -= 20;
 
         const id = `${host}::${link}::${img}`;
@@ -443,7 +450,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  // If blocked
   if (saw429 || saw403) {
     const response = {
       images: [] as ImageResult[],
@@ -465,7 +471,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json(response);
   }
 
-  // Deduplicate
+  // Dedup
   const dedupMap = new Map<string, Candidate>();
   for (const c of candidates) {
     const k = `${c.link}::${c.img}`;
@@ -490,18 +496,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (rerankSource === "openai") {
     const byId = new Map<string, Candidate>();
     for (const c of deduped) byId.set(c.id, c);
+
     for (const id of rr.ids) {
       const c = byId.get(id);
       if (c) ranked.push(c);
     }
-    // append remaining
+
     const seenId = new Set(ranked.map(r => r.id));
     for (const c of deduped) if (!seenId.has(c.id)) ranked.push(c);
   } else {
     ranked = deduped;
   }
 
-  // Selection (hard caps)
+  // Selection caps
   const desired = 18;
   const perDomainCap = 3;
   const capByCat: Record<Category, number> = {
