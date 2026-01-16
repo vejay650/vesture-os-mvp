@@ -2,7 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-const VERSION = "moodboard-v8-pasteall-2026-01-14";
+const VERSION = "moodboard-v9-diversity-fill-2026-01-14";
 
 /* =======================
    Types
@@ -66,25 +66,54 @@ function safeJsonParse(txt: string): any | null {
    Filters / Rules
 ======================= */
 const BLOCKED_DOMAINS = [
-  "pinterest.", "pinimg.com",
-  "twitter.", "x.com",
-  "facebook.", "reddit.", "tumblr.",
-  "wikipedia."
+  "pinterest.",
+  "pinimg.com",
+  "twitter.",
+  "x.com",
+  "facebook.",
+  "reddit.",
+  "tumblr.",
+  "wikipedia.",
 ];
 
 // Exclude non-product / nav / editorial pages
 const EXCLUDE_INURL = [
-  "/kids/", "/girls/", "/boys/", "/baby/",
-  "/help/", "/support/", "/customer-service",
-  "/press/", "/privacy", "/terms", "/policy",
-  "size-guide", "size_guide", "returns", "shipping",
-  "/blog", "/blogs", "/journal", "/stories", "/story", "/editorial", "/lookbook",
-  "/search", "?q=", "&q=", "/category", "/categories",
-  "/collections", "/collection",
-  "/pages/", "/page/",
-  "/store-locator", "/stores",
+  "/kids/",
+  "/girls/",
+  "/boys/",
+  "/baby/",
+  "/help/",
+  "/support/",
+  "/customer-service",
+  "/press/",
+  "/privacy",
+  "/terms",
+  "/policy",
+  "size-guide",
+  "size_guide",
+  "returns",
+  "shipping",
+  "/blog",
+  "/blogs",
+  "/journal",
+  "/stories",
+  "/story",
+  "/editorial",
+  "/lookbook",
+  "/search",
+  "?q=",
+  "&q=",
+  "/category",
+  "/categories",
+  "/collections",
+  "/collection",
+  "/pages/",
+  "/page/",
+  "/store-locator",
+  "/stores",
   "/pages/shop",
-  "/shop-all", "/shopall",
+  "/shop-all",
+  "/shopall",
 ];
 
 const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
@@ -93,16 +122,41 @@ const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
 /* =======================
+   Gender filtering (IMPORTANT)
+   Prevents /women/ pages when gender=men and vice versa
+======================= */
+function genderOk(link: string, gender: string): boolean {
+  const g = (gender || "").toLowerCase();
+  const u = (link || "").toLowerCase();
+  if (g.includes("men")) {
+    if (u.includes("/women/") || u.includes("/womens") || u.includes("/female")) return false;
+  }
+  if (g.includes("women")) {
+    if (u.includes("/men/") || u.includes("/mens") || u.includes("/male")) return false;
+  }
+  return true;
+}
+
+/* =======================
    Category guesser
 ======================= */
 function guessCategory(q: string, title: string, url: string): Category {
   const t = (q + " " + title + " " + url).toLowerCase();
 
-  if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|heel|heels|trainer|trainers|footwear)/.test(t)) return "shoes";
-  if (/(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet|watch)/.test(t)) return "accessories";
-  if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|overcoat|denim jacket|leather jacket)/.test(t)) return "outerwear";
-  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt|chinos)/.test(t)) return "bottoms";
-  if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse|polo)/.test(t)) return "tops";
+  if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|heel|heels|trainer|trainers|footwear)/.test(t))
+    return "shoes";
+  if (
+    /(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet|watch)/.test(
+      t
+    )
+  )
+    return "accessories";
+  if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|overcoat|denim jacket|leather jacket)/.test(t))
+    return "outerwear";
+  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt|chinos)/.test(t))
+    return "bottoms";
+  if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse|polo)/.test(t))
+    return "tops";
   return "other";
 }
 
@@ -123,17 +177,12 @@ function productishBoost(url: string): number {
     u.includes("/journal") ||
     u.includes("/editorial") ||
     u.includes("/lookbook")
-  ) return -40;
+  )
+    return -40;
 
   // product-ish boost
-  if (
-    u.includes("/product") ||
-    u.includes("/products") ||
-    u.includes("/p/") ||
-    u.includes("/item/") ||
-    u.includes("/dp/") ||
-    u.includes("/sku/")
-  ) return 24;
+  if (u.includes("/product") || u.includes("/products") || u.includes("/p/") || u.includes("/item/") || u.includes("/dp/") || u.includes("/sku/"))
+    return 24;
 
   return 0;
 }
@@ -145,8 +194,8 @@ type CacheVal = { at: number; data: any };
 const CACHE_TTL_MS = 60_000;
 
 const globalAny = globalThis as any;
-if (!globalAny.__MOODBOARD_CACHE_V8) globalAny.__MOODBOARD_CACHE_V8 = new Map<string, CacheVal>();
-const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE_V8;
+if (!globalAny.__MOODBOARD_CACHE_V9) globalAny.__MOODBOARD_CACHE_V9 = new Map<string, CacheVal>();
+const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE_V9;
 
 function getCache(key: string): any | null {
   const v = cache.get(key);
@@ -185,7 +234,7 @@ async function googleImageSearchOnce(q: string, key: string, cx: string, num: nu
 }
 
 /* =======================
-   OpenAI: query generator (balanced)
+   OpenAI: query generator
 ======================= */
 async function aiQueries(prompt: string, gender: string): Promise<string[]> {
   const apiKey = clean(process.env.OPENAI_API_KEY);
@@ -233,10 +282,7 @@ Prompt: "${prompt}"
 
 function fallbackQueries(prompt: string, gender: string): string[] {
   const gLc = (gender || "").toLowerCase();
-  const g =
-    gLc.includes("women") || gLc.includes("female") ? "women" :
-    gLc.includes("men") || gLc.includes("male") ? "men" :
-    "unisex";
+  const g = gLc.includes("women") || gLc.includes("female") ? "women" : gLc.includes("men") || gLc.includes("male") ? "men" : "unisex";
 
   const p = (prompt || "").toLowerCase().split(/\s+/).slice(0, 5).join(" ");
   const P = p ? ` ${p}` : "";
@@ -248,11 +294,11 @@ function fallbackQueries(prompt: string, gender: string): string[] {
     `sleek blazer${P} ${g}`,
     `leather belt${P} ${g}`,
     `minimal watch${P} ${g}`,
-  ].map(s => s.trim()).slice(0, 6);
+  ].map((s) => s.trim()).slice(0, 6);
 }
 
 /* =======================
-   OpenAI: reranker (FIXED)
+   OpenAI: reranker
 ======================= */
 async function aiRerank(
   prompt: string,
@@ -262,7 +308,6 @@ async function aiRerank(
   const apiKey = clean(process.env.OPENAI_API_KEY);
   if (!apiKey) return { ids: [], ok: false, reason: "missing OPENAI_API_KEY" };
 
-  // smaller payload -> more reliable output
   const shortlist = items.slice(0, 30);
   if (shortlist.length < 8) return { ids: [], ok: false, reason: "not enough candidates" };
 
@@ -308,9 +353,7 @@ Candidates: ${JSON.stringify(payload)}
     const arr: any[] = Array.isArray(parsed?.ranked_ids) ? parsed.ranked_ids : [];
     const ids: string[] = arr.map((x: any) => String(x ?? "").trim()).filter(Boolean);
 
-    // ✅ accept shorter lists so rerank actually activates
     if (ids.length >= 5) return { ids, ok: true, raw: content };
-
     return { ids, ok: false, reason: `rerank ids too short (${ids.length})`, raw: content };
   } catch (e: any) {
     return { ids: [], ok: false, reason: e?.message || "rerank error" };
@@ -327,6 +370,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const qVal = toFirstString(input.q);
   const prompt = clean(input.prompt || qVal || "");
   const gender = clean(input.gender || "unisex");
+  const cb = clean(input.cb || "");
 
   if (!prompt) return res.status(400).json({ error: "Missing prompt (send 'prompt' or 'q')" });
 
@@ -341,7 +385,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
 
-  const cacheKey = `v8:${VERSION}:${gender}:${prompt.toLowerCase()}`;
+  const cacheKey = `v9:${VERSION}:${gender}:${prompt.toLowerCase()}:${cb}`;
   const cached = getCache(cacheKey);
   if (cached) return res.status(200).json(cached);
 
@@ -389,8 +433,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       fetchDebug[q].statusCodes.push(status);
       fetchDebug[q].itemsSeen += items.length;
 
-      if (status === 429) { saw429 = true; break outer; }
-      if (status === 403) { saw403 = true; break outer; }
+      if (status === 429) {
+        saw429 = true;
+        break outer;
+      }
+      if (status === 403) {
+        saw403 = true;
+        break outer;
+      }
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
@@ -401,8 +451,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const title: string = String((it as any)?.title ?? "");
         if (!img || !link) continue;
 
+        if (!genderOk(link, gender)) continue; // ✅ block wrong gender pages
+
         let host = "";
-        try { host = normHost(new URL(link).hostname); } catch { continue; }
+        try {
+          host = normHost(new URL(link).hostname);
+        } catch {
+          continue;
+        }
 
         if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
         if (!sites.some((s) => host === s || host.endsWith(s))) continue;
@@ -421,12 +477,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         // push away farfetch
         if (host.includes("farfetch")) score -= 12;
-
-        // small boosts for good sites
-        if (host.includes("ssense")) score += 2;
-        if (host.includes("neimanmarcus")) score += 2;
-        if (host.includes("nepenthes")) score += 2;
-        if (host.includes("ourlegacy")) score += 2;
 
         const guessed = guessCategory(q, title, link);
         if (guessed === intendedCategory) score += 5;
@@ -486,11 +536,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   let rerankReason: string | undefined = undefined;
 
   const rr = await aiRerank(prompt, gender, deduped);
-  if (rr.ok) {
-    rerankSource = "openai";
-  } else {
-    rerankReason = rr.reason;
-  }
+  if (rr.ok) rerankSource = "openai";
+  else rerankReason = rr.reason;
 
   let ranked: Candidate[] = [];
   if (rerankSource === "openai") {
@@ -502,22 +549,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (c) ranked.push(c);
     }
 
-    const seenId = new Set(ranked.map(r => r.id));
+    const seenId = new Set(ranked.map((r) => r.id));
     for (const c of deduped) if (!seenId.has(c.id)) ranked.push(c);
   } else {
     ranked = deduped;
   }
 
-  // Selection caps
+  /* =======================
+     Selection caps  (IMPORTANT)
+  ======================= */
   const desired = 18;
-  const perDomainCap = 3;
+
+  // ✅ retailer variety: only 1 tile per retailer
+  const perDomainCap = 1;
+
+  // ✅ allow enough per category so we can fill
   const capByCat: Record<Category, number> = {
-    shoes: 4,
-    bottoms: 4,
-    tops: 4,
-    outerwear: 3,
-    accessories: 3,
-    other: 2,
+    shoes: 5,
+    bottoms: 5,
+    tops: 5,
+    outerwear: 4,
+    accessories: 4,
+    other: 3,
   };
 
   const out: ImageResult[] = [];
@@ -573,7 +626,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return true;
   }
 
-  // ensure core categories show first
+  // ensure core categories show first (1 each)
   const core: Category[] = ["shoes", "bottoms", "tops", "outerwear", "accessories"];
   for (const cat of core) {
     for (const c of ranked) {
@@ -582,10 +635,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  // fill remaining
+  // fill remaining (normal rules)
   for (const c of ranked) {
     if (out.length >= desired) break;
     take(c);
+  }
+
+  // emergency fill: if still low, relax category caps but keep per-domain + farfetch cap
+  if (out.length < 10) {
+    for (const c of ranked) {
+      if (out.length >= desired) break;
+
+      const k = `${c.link}::${c.img}`;
+      if (seen.has(k)) continue;
+
+      if (c.host.includes("farfetch.com")) {
+        const f = domainCount.get("farfetch.com") || 0;
+        if (f >= 1) continue;
+      }
+
+      const d = domainCount.get(c.host) || 0;
+      if (d >= perDomainCap) continue;
+
+      const risky = HOTLINK_RISK.some((d2) => c.host.endsWith(d2));
+      const imageUrl = risky && c.thumb ? c.thumb : c.img;
+
+      seen.add(k);
+      domainCount.set(c.host, d + 1);
+      catCount.set(c.guessedCategory, (catCount.get(c.guessedCategory) || 0) + 1);
+
+      out.push({
+        imageUrl,
+        thumbnailUrl: c.thumb,
+        sourceUrl: c.link,
+        title: c.title,
+        provider: c.host,
+        score: c.heuristicScore,
+        query: c.query,
+        category: c.guessedCategory,
+      });
+    }
   }
 
   const response = {
