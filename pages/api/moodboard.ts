@@ -2,7 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-const VERSION = "moodboard-v11-more-inventory-better-categories-2026-01-15";
+const VERSION = "moodboard-v12-STABLE-FINAL-2026-01-15";
 
 /* =======================
    Types
@@ -56,6 +56,18 @@ function safeJsonParse(txt: string): any | null {
   }
 }
 
+function uniq(arr: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of arr) {
+    const k = String(x);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+  }
+  return out;
+}
+
 function hash32(str: string): number {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -65,22 +77,21 @@ function hash32(str: string): number {
   return h >>> 0;
 }
 
-function uniq<T>(arr: T[]): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const x of arr) {
-    const k = String(x);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(x);
-  }
-  return out;
-}
+const isFarfetch = (host: string) => host.includes("farfetch.com");
 
 /* =======================
    Filters / Rules
 ======================= */
-const BLOCKED_DOMAINS = ["pinterest.", "pinimg.com", "twitter.", "x.com", "facebook.", "reddit.", "tumblr.", "wikipedia."];
+const BLOCKED_DOMAINS = [
+  "pinterest.",
+  "pinimg.com",
+  "twitter.",
+  "x.com",
+  "facebook.",
+  "reddit.",
+  "tumblr.",
+  "wikipedia.",
+];
 
 const EXCLUDE_INURL = [
   "/kids/",
@@ -123,22 +134,36 @@ const EXCLUDE_INURL = [
 
 const EXCLUDE_TERMS = ["kids", "toddler", "boy", "girl", "baby"];
 
-// Some luxury sites hotlink/block full images; thumb is safer
 const HOTLINK_RISK = ["louisvuitton.com", "bottegaveneta.com", "versace.com", "moncler.com"];
 
 /* =======================
-   Gender filtering
+   Gender hard filter
 ======================= */
-function genderOk(link: string, gender: string): boolean {
+function isWomenItem(title: string, url: string): boolean {
+  const t = (title + " " + url).toLowerCase();
+  return (
+    t.includes("/women") ||
+    t.includes("/womens") ||
+    t.includes("women") ||
+    t.includes("womens") ||
+    t.includes("female") ||
+    t.includes("dress") ||
+    t.includes("skirt") ||
+    t.includes("bra") ||
+    t.includes("lingerie") ||
+    t.includes("heels") ||
+    t.includes("stiletto")
+  );
+}
+function isMenItem(title: string, url: string): boolean {
+  const t = (title + " " + url).toLowerCase();
+  return t.includes("/men") || t.includes("/mens") || t.includes("men") || t.includes("mens") || t.includes("male");
+}
+function genderReject(title: string, url: string, gender: string): boolean {
   const g = (gender || "").toLowerCase();
-  const u = (link || "").toLowerCase();
-  if (g.includes("men")) {
-    if (u.includes("/women/") || u.includes("/womens") || u.includes("/female")) return false;
-  }
-  if (g.includes("women")) {
-    if (u.includes("/men/") || u.includes("/mens") || u.includes("/male")) return false;
-  }
-  return true;
+  if (g.includes("men")) return isWomenItem(title, url); // men mode: reject women-coded items
+  if (g.includes("women")) return isMenItem(title, url); // women mode: reject men-coded items
+  return false; // unisex
 }
 
 /* =======================
@@ -147,18 +172,17 @@ function genderOk(link: string, gender: string): boolean {
 function guessCategory(q: string, title: string, url: string): Category {
   const t = (q + " " + title + " " + url).toLowerCase();
 
-  if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|heel|heels|trainer|trainers|footwear)/.test(t))
-    return "shoes";
+  if (/(sneaker|sneakers|shoe|shoes|boot|boots|loafer|loafers|trainer|trainers|footwear)/.test(t)) return "shoes";
   if (
-    /(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet)/.test(t)
+    /(bag|tote|crossbody|shoulder bag|wallet|belt|cap|hat|beanie|scarf|sunglasses|jewelry|necklace|ring|bracelet|watch)/.test(
+      t
+    )
   )
     return "accessories";
   if (/(coat|jacket|puffer|parka|blazer|outerwear|trench|bomber|overcoat|denim jacket|leather jacket)/.test(t))
     return "outerwear";
-  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|skirt|chinos)/.test(t))
-    return "bottoms";
-  if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|blouse|polo)/.test(t))
-    return "tops";
+  if (/(jean|jeans|denim|trouser|trousers|pant|pants|cargo|short|shorts|chinos)/.test(t)) return "bottoms";
+  if (/(tee|t-shirt|tshirt|shirt|overshirt|top|hoodie|sweater|knit|crewneck|polo)/.test(t)) return "tops";
   return "other";
 }
 
@@ -168,6 +192,7 @@ function guessCategory(q: string, title: string, url: string): Category {
 function productishBoost(url: string): number {
   const u = (url || "").toLowerCase();
 
+  // kill nav/editorial pages
   if (
     u.includes("/pages/") ||
     u.includes("/page/") ||
@@ -181,7 +206,15 @@ function productishBoost(url: string): number {
   )
     return -40;
 
-  if (u.includes("/product") || u.includes("/products") || u.includes("/p/") || u.includes("/item/") || u.includes("/dp/") || u.includes("/sku/"))
+  // boost product paths
+  if (
+    u.includes("/product") ||
+    u.includes("/products") ||
+    u.includes("/p/") ||
+    u.includes("/item/") ||
+    u.includes("/dp/") ||
+    u.includes("/sku/")
+  )
     return 24;
 
   return 0;
@@ -194,8 +227,8 @@ type CacheVal = { at: number; data: any };
 const CACHE_TTL_MS = 60_000;
 
 const globalAny = globalThis as any;
-if (!globalAny.__MOODBOARD_CACHE_V11) globalAny.__MOODBOARD_CACHE_V11 = new Map<string, CacheVal>();
-const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE_V11;
+if (!globalAny.__MOODBOARD_CACHE_V12) globalAny.__MOODBOARD_CACHE_V12 = new Map<string, CacheVal>();
+const cache: Map<string, CacheVal> = globalAny.__MOODBOARD_CACHE_V12;
 
 function getCache(key: string): any | null {
   const v = cache.get(key);
@@ -211,13 +244,13 @@ function setCache(key: string, data: any) {
 }
 
 /* =======================
-   Google CSE (single call)
+   Google CSE
 ======================= */
 async function googleImageSearchOnce(q: string, key: string, cx: string, num: number) {
   const url = new URL("https://www.googleapis.com/customsearch/v1");
   url.searchParams.set("q", q);
   url.searchParams.set("searchType", "image");
-  url.searchParams.set("num", String(Math.min(10, Math.max(1, num))));
+  url.searchParams.set("num", String(Math.min(10, Math.max(1, num)))); // max 10
   url.searchParams.set("start", "1");
   url.searchParams.set("key", key);
   url.searchParams.set("cx", cx);
@@ -234,36 +267,30 @@ async function googleImageSearchOnce(q: string, key: string, cx: string, num: nu
 }
 
 /* =======================
-   OpenAI: query generator (v11)
-   - replaces "watch" with "bag"
-   - makes bottoms query explicitly trousers/pants
+   OpenAI: query generator
 ======================= */
 async function aiQueries(prompt: string, gender: string): Promise<string[]> {
   const apiKey = clean(process.env.OPENAI_API_KEY);
   if (!apiKey) return [];
-
   const client = new OpenAI({ apiKey });
   const model = clean(process.env.OPENAI_MODEL) || "gpt-4o-mini";
 
-  const system = `
-Return ONLY valid JSON: { "queries": ["...", "...", "...", "...", "...", "..."] }
+  const sys = `
+Return ONLY valid JSON:
+{ "queries": ["...","...","...","...","...","..."] }
 
-Generate EXACTLY 6 retail PRODUCT search queries.
+Create EXACTLY 6 short product search queries (3–8 words each) for retail shopping.
 Rules:
-- Each query 3–9 words
-- Must include gender word: "men" or "women" or "unisex"
-- Preserve prompt meaning (color/material/vibe)
-- Avoid generic words like "unique" unless prompt asks
-
-Category order MUST be:
-1) shoes
-2) bottoms (MUST include "trousers" OR "pants" OR "chinos")
-3) tops
-4) outerwear
-5) accessory (MUST be belt OR bag OR sunglasses)
-6) wildcard (but NOT "watch")
-
-If prompt mentions one category (boots), only TWO of the 6 may be footwear.
+- Must include one of: men / women / unisex
+- Keep prompt meaning (color/material/vibe)
+- Category order:
+  1) shoes
+  2) bottoms
+  3) tops
+  4) outerwear
+  5) accessories
+  6) wildcard standout item
+- If prompt is footwear-heavy, only 2 of 6 may be footwear.
 
 Gender hint: "${gender}"
 Prompt: "${prompt}"
@@ -271,43 +298,45 @@ Prompt: "${prompt}"
 
   const resp = await client.chat.completions.create({
     model,
-    messages: [{ role: "system", content: system }],
+    messages: [{ role: "system", content: sys }],
     temperature: 0.15,
-    max_tokens: 460,
+    max_tokens: 420,
   });
 
   const content = resp.choices?.[0]?.message?.content?.trim() || "";
   const parsed = safeJsonParse(content);
-  const arr: any[] = Array.isArray(parsed?.queries) ? parsed.queries : [];
-  const qs: string[] = arr.map((x: any) => String(x ?? "").trim()).filter(Boolean);
+  const arr = Array.isArray(parsed?.queries) ? (parsed.queries as any[]) : [];
+  const qs = arr.map((x) => String(x ?? "").trim()).filter(Boolean) as string[];
   return uniq(qs).slice(0, 6);
 }
 
 function fallbackQueries(prompt: string, gender: string): string[] {
   const gLc = (gender || "").toLowerCase();
-  const g = gLc.includes("women") || gLc.includes("female") ? "women" : gLc.includes("men") || gLc.includes("male") ? "men" : "unisex";
+  const g =
+    gLc.includes("women") ? "women" : gLc.includes("men") ? "men" : "unisex";
+
   const p = (prompt || "").toLowerCase().split(/\s+/).slice(0, 6).join(" ");
   const P = p ? ` ${p}` : "";
 
-  return [
-    `minimal chelsea boots${P} ${g}`,
-    `tailored trousers${P} ${g}`,
-    `clean button-up shirt${P} ${g}`,
-    `sleek bomber jacket${P} ${g}`,
-    `leather belt${P} ${g}`,
-    `minimal crossbody bag${P} ${g}`,
-  ].map((s) => s.trim()).slice(0, 6);
+  return uniq([
+    `minimal chelsea boots ${g}${P}`,
+    `tailored trousers ${g}${P}`,
+    `clean button-up shirt ${g}${P}`,
+    `sleek bomber jacket ${g}${P}`,
+    `leather belt ${g}${P}`,
+    `minimal sunglasses ${g}${P}`,
+  ]).slice(0, 6);
 }
 
 /* =======================
-   OpenAI: reranker
+   OpenAI rerank (optional)
 ======================= */
-async function aiRerank(prompt: string, gender: string, items: Candidate[]): Promise<{ ids: string[]; ok: boolean; reason?: string }> {
+async function aiRerank(prompt: string, gender: string, items: Candidate[]) {
   const apiKey = clean(process.env.OPENAI_API_KEY);
-  if (!apiKey) return { ids: [], ok: false, reason: "missing OPENAI_API_KEY" };
+  if (!apiKey) return { ids: [] as string[], ok: false as const, reason: "missing OPENAI_API_KEY" };
 
-  const shortlist = items.slice(0, 35);
-  if (shortlist.length < 10) return { ids: [], ok: false, reason: "not enough candidates" };
+  const shortlist = items.slice(0, 30);
+  if (shortlist.length < 8) return { ids: [] as string[], ok: false as const, reason: "not enough candidates" };
 
   const client = new OpenAI({ apiKey });
   const model = clean(process.env.OPENAI_MODEL) || "gpt-4o-mini";
@@ -316,19 +345,20 @@ async function aiRerank(prompt: string, gender: string, items: Candidate[]): Pro
     id: c.id,
     title: c.title.slice(0, 120),
     host: c.host,
-    url: c.link.slice(0, 180),
+    url: c.link.slice(0, 160),
     cat: c.guessedCategory,
     q: c.query.slice(0, 80),
   }));
 
-  const system = `
-Return ONLY valid JSON: { "ranked_ids": ["id1","id2", ...] }
+  const sys = `
+Return ONLY valid JSON:
+{ "ranked_ids": ["id1","id2", ...] }
 
-Rank by best match to the prompt vibe.
-- Diversity early: shoes/bottoms/tops/outerwear/accessories
-- Penalize nav/editorial pages
-- Penalize obvious mismatch (e.g. shirts when query is trousers)
-- Strongly penalize farfetch unless perfect match
+Rank by BEST match to prompt + correct product type.
+Hard rules:
+- Penalize wrong-category items heavily.
+- Penalize non-product pages.
+- Farfetch must be ranked last if present (but we already block it).
 
 Gender hint: "${gender}"
 Prompt: "${prompt}"
@@ -338,20 +368,20 @@ Candidates: ${JSON.stringify(payload)}
   try {
     const resp = await client.chat.completions.create({
       model,
-      messages: [{ role: "system", content: system }],
+      messages: [{ role: "system", content: sys }],
       temperature: 0.1,
       max_tokens: 900,
     });
 
     const content = resp.choices?.[0]?.message?.content?.trim() || "";
     const parsed = safeJsonParse(content);
-    const arr: any[] = Array.isArray(parsed?.ranked_ids) ? parsed.ranked_ids : [];
-    const ids: string[] = arr.map((x: any) => String(x ?? "").trim()).filter(Boolean);
+    const arr = Array.isArray(parsed?.ranked_ids) ? (parsed.ranked_ids as any[]) : [];
+    const ids = arr.map((x) => String(x ?? "").trim()).filter(Boolean) as string[];
 
-    if (ids.length >= 6) return { ids, ok: true };
-    return { ids, ok: false, reason: `rerank ids too short (${ids.length})` };
+    if (ids.length >= 5) return { ids, ok: true as const, reason: undefined as string | undefined };
+    return { ids, ok: false as const, reason: `rerank too few ids (${ids.length})` };
   } catch (e: any) {
-    return { ids: [], ok: false, reason: e?.message || "rerank error" };
+    return { ids: [] as string[], ok: false as const, reason: e?.message || "rerank error" };
   }
 }
 
@@ -362,8 +392,9 @@ function pickSitesForQuery(allSites: string[], prompt: string, q: string, max: n
   const key = `${prompt.toLowerCase()}::${q.toLowerCase()}`;
   const h = hash32(key);
 
-  const sitesNoFarfetch = allSites.filter((s) => !s.includes("farfetch.com"));
-  const src = sitesNoFarfetch.length ? sitesNoFarfetch : allSites;
+  // remove farfetch entirely from rotation
+  const src = allSites.filter((s) => !s.includes("farfetch.com"));
+  if (!src.length) return [];
 
   const start = h % src.length;
   const picked: string[] = [];
@@ -394,11 +425,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const sites = clean(process.env.RETAILER_SITES || "")
     .split(",")
     .map(normHost)
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((s) => !s.includes("farfetch.com")); // hard remove farfetch
 
-  if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty" });
+  if (!sites.length) return res.status(500).json({ error: "RETAILER_SITES is empty (or only farfetch)" });
 
-  const cacheKey = `v11:${VERSION}:${gender}:${prompt.toLowerCase()}:${cb}`;
+  const cacheKey = `v12:${VERSION}:${gender}:${prompt.toLowerCase()}:${cb}`;
   const cached = getCache(cacheKey);
   if (cached) return res.status(200).json(cached);
 
@@ -422,10 +454,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   let saw429 = false;
   let saw403 = false;
 
-  // v11: pull MORE candidates per site + fewer sites => deeper inventory
-  const SITES_PER_QUERY = 4;
-  const NUM_PER_SITE = 6;
+  const SITES_PER_QUERY = 6;
+  const NUM_PER_SITE = 10; // BIGGEST POOL (max per CSE request)
 
+  // Retrieve
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi];
     const intendedCategory = intendedByIndex[Math.min(qi, intendedByIndex.length - 1)];
@@ -436,35 +468,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (let si = 0; si < sitesForThisQuery.length; si++) {
       const site = sitesForThisQuery[si];
 
-      // v11: enforce bottoms queries not drifting to shirts
-      const mustBottoms =
-        intendedCategory === "bottoms" ? ` (trousers OR pants OR chinos OR denim OR jeans)` : "";
-
-      const search = `${q}${mustBottoms} product -pinterest -editorial -review -lookbook site:${site}`;
+      const search = `${q} product -pinterest -editorial -review -lookbook -collection -collections site:${site}`;
       const { items, status } = await googleImageSearchOnce(search, cseKey, cseCx, NUM_PER_SITE);
 
       fetchDebug[q].statusCodes.push(status);
       fetchDebug[q].itemsSeen += items.length;
 
-      if (status === 429) {
-        saw429 = true;
-        break;
-      }
-      if (status === 403) {
-        saw403 = true;
-        break;
-      }
+      if (status === 429) { saw429 = true; break; }
+      if (status === 403) { saw403 = true; break; }
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
 
-        const img: string = String((it as any)?.link ?? "");
-        const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
-        const link: string = String((it as any)?.image?.contextLink ?? "");
-        const title: string = String((it as any)?.title ?? "");
-        if (!img || !link) continue;
+        const img = String(it?.link ?? "");
+        const thumb = String(it?.image?.thumbnailLink ?? "");
+        const link = String(it?.image?.contextLink ?? "");
+        const title = String(it?.title ?? "");
 
-        if (!genderOk(link, gender)) continue;
+        if (!img || !link) continue;
 
         let host = "";
         try {
@@ -473,40 +494,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           continue;
         }
 
+        // hard block farfetch (again)
+        if (isFarfetch(host)) continue;
+
         if (BLOCKED_DOMAINS.some((b) => host.includes(b))) continue;
         if (!sites.some((s) => host === s || host.endsWith(s))) continue;
 
         const urlLc = link.toLowerCase();
         const titleLc = title.toLowerCase();
+
         if (EXCLUDE_INURL.some((x) => urlLc.includes(x))) continue;
         if (EXCLUDE_TERMS.some((x) => titleLc.includes(x))) continue;
 
+        // hard gender reject (fixes women items leaking into men)
+        if (genderReject(title, link, gender)) continue;
+
+        // score
         let score = 0;
         score += productishBoost(link);
 
-        const tokens = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+        const tokens = q.toLowerCase().split(/\s+/).filter((t: string) => t.length >= 3);
         const text = (title + " " + link).toLowerCase();
-        for (let t = 0; t < tokens.length; t++) if (text.includes(tokens[t])) score += 2;
-
-        // hard push away farfetch
-        if (host.includes("farfetch")) score -= 18;
-
-        // small boost for "good" retailers if present
-        if (/(ssense|ourlegacy|nepenthes|neimanmarcus|yoox|stockx|supreme)/.test(host)) score += 2;
+        for (let t = 0; t < tokens.length; t++) {
+          if (text.includes(tokens[t])) score += 2;
+        }
 
         const guessed = guessCategory(q, title, link);
 
-        // punish mismatches hard
-        if (intendedCategory === "bottoms" && guessed !== "bottoms") score -= 12;
-        if (intendedCategory === "shoes" && guessed !== "shoes") score -= 10;
+        // strong category enforcement
+        if (guessed === intendedCategory) score += 10;
+        else score -= 8;
 
-        // reward intended match
-        if (guessed === intendedCategory) score += 7;
-
+        // nav-ish title penalty
         if (/(^shop\b|homepage|new arrivals|sale$)/i.test(title)) score -= 20;
 
+        // small boosts for known indexable sources
+        if (/(ssense|ourlegacy|nepenthes|neimanmarcus|yoox|stockx|supreme)/.test(host)) score += 2;
+
+        const id = `${host}::${link}::${img}`;
         candidates.push({
-          id: `${host}::${link}::${img}`,
+          id,
           title,
           link,
           img,
@@ -523,47 +550,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (saw429 || saw403) break;
   }
 
-  // v11: only use farfetch fallback if REALLY empty
-  let usedFarfetchFallback = false;
-  if (!saw429 && !saw403 && candidates.length < 20 && sites.includes("farfetch.com")) {
-    usedFarfetchFallback = true;
-    const fallbackQs = queries.slice(0, 2);
-    for (let i = 0; i < fallbackQs.length; i++) {
-      const q = fallbackQs[i];
-      const search = `${q} product site:farfetch.com`;
-      const { items } = await googleImageSearchOnce(search, cseKey, cseCx, 4);
-      for (const it of items) {
-        const img: string = String((it as any)?.link ?? "");
-        const thumb: string = String((it as any)?.image?.thumbnailLink ?? "");
-        const link: string = String((it as any)?.image?.contextLink ?? "");
-        const title: string = String((it as any)?.title ?? "");
-        if (!img || !link) continue;
-
-        let host = "";
-        try {
-          host = normHost(new URL(link).hostname);
-        } catch {
-          continue;
-        }
-
-        const guessed = guessCategory(q, title, link);
-
-        candidates.push({
-          id: `${host}::${link}::${img}`,
-          title,
-          link,
-          img,
-          thumb: thumb || undefined,
-          host,
-          query: q,
-          intendedCategory: i === 0 ? "shoes" : "bottoms",
-          guessedCategory: guessed,
-          heuristicScore: -8,
-        });
-      }
-    }
-  }
-
+  // If rate limited, return debug
   if (saw429 || saw403) {
     const response = {
       images: [] as ImageResult[],
@@ -576,10 +563,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         rerankReason: saw429 ? "429 rate limit" : "403 forbidden",
         queries,
         totalCandidates: candidates.length,
-        usedFarfetchFallback,
         saw429,
         saw403,
         fetch: fetchDebug,
+        note: saw429 ? "Google CSE rate limit — increase quota/billing or reduce traffic." : "403 — check key/cx permissions.",
       },
     };
     setCache(cacheKey, response);
@@ -593,42 +580,37 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const prev = dedupMap.get(k);
     if (!prev || c.heuristicScore > prev.heuristicScore) dedupMap.set(k, c);
   }
+
   const deduped = Array.from(dedupMap.values());
   deduped.sort((a, b) => b.heuristicScore - a.heuristicScore);
 
   // Rerank
   let rerankSource: "openai" | "heuristic" = "heuristic";
-  let rerankReason: string | undefined = undefined;
+  let rerankReason: string | undefined;
 
   const rr = await aiRerank(prompt, gender, deduped);
-  if (rr.ok) rerankSource = "openai";
-  else rerankReason = rr.reason;
+  let ranked: Candidate[] = deduped;
 
-  let ranked: Candidate[] = [];
-  if (rerankSource === "openai") {
+  if (rr.ok) {
+    rerankSource = "openai";
     const byId = new Map<string, Candidate>();
     for (const c of deduped) byId.set(c.id, c);
 
+    const fromAi: Candidate[] = [];
     for (const id of rr.ids) {
       const c = byId.get(id);
-      if (c) ranked.push(c);
+      if (c) fromAi.push(c);
     }
-    const seenId = new Set(ranked.map((r) => r.id));
-    for (const c of deduped) if (!seenId.has(c.id)) ranked.push(c);
+    const seen = new Set(fromAi.map((x) => x.id));
+    for (const c of deduped) if (!seen.has(c.id)) fromAi.push(c);
+    ranked = fromAi;
   } else {
-    ranked = deduped;
+    rerankReason = rr.reason;
   }
 
-  /* =======================
-     Selection caps
-  ======================= */
+  // Selection (diversify)
   const desired = 18;
-
-  // Allow up to 2 per site now that inventory is larger
-  const perDomainCap = 2;
-
-  // Hard cap farfetch to 1
-  const FARFETCH_CAP = 1;
+  const perDomainCap = 1;
 
   const capByCat: Record<Category, number> = {
     shoes: 5,
@@ -640,18 +622,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   };
 
   const out: ImageResult[] = [];
-  const seen = new Set<string>();
+  const seenKey = new Set<string>();
   const domainCount = new Map<string, number>();
   const catCount = new Map<Category, number>();
 
   function canTake(c: Candidate): boolean {
     const k = `${c.link}::${c.img}`;
-    if (seen.has(k)) return false;
+    if (seenKey.has(k)) return false;
 
-    if (c.host.includes("farfetch.com")) {
-      const f = domainCount.get("farfetch.com") || 0;
-      if (f >= FARFETCH_CAP) return false;
-    }
+    // final hard block farfetch (safety)
+    if (isFarfetch(c.host)) return false;
 
     const d = domainCount.get(c.host) || 0;
     if (d >= perDomainCap) return false;
@@ -667,15 +647,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!canTake(c)) return false;
 
     const k = `${c.link}::${c.img}`;
-    const d = domainCount.get(c.host) || 0;
-    const cc = catCount.get(c.guessedCategory) || 0;
+    seenKey.add(k);
+    domainCount.set(c.host, (domainCount.get(c.host) || 0) + 1);
+    catCount.set(c.guessedCategory, (catCount.get(c.guessedCategory) || 0) + 1);
 
     const risky = HOTLINK_RISK.some((d2) => c.host.endsWith(d2));
     const imageUrl = risky && c.thumb ? c.thumb : c.img;
-
-    seen.add(k);
-    domainCount.set(c.host, d + 1);
-    catCount.set(c.guessedCategory, cc + 1);
 
     out.push({
       imageUrl,
@@ -691,7 +668,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return true;
   }
 
-  // Core categories first
+  // Ensure one per core category first
   const core: Category[] = ["shoes", "bottoms", "tops", "outerwear", "accessories"];
   for (const cat of core) {
     for (const c of ranked) {
@@ -706,42 +683,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     take(c);
   }
 
-  // If still low, relax category caps but keep domain caps + farfetch cap
-  if (out.length < 12) {
-    for (const c of ranked) {
-      if (out.length >= desired) break;
-
-      const k = `${c.link}::${c.img}`;
-      if (seen.has(k)) continue;
-
-      if (c.host.includes("farfetch.com")) {
-        const f = domainCount.get("farfetch.com") || 0;
-        if (f >= FARFETCH_CAP) continue;
-      }
-
-      const d = domainCount.get(c.host) || 0;
-      if (d >= perDomainCap) continue;
-
-      const risky = HOTLINK_RISK.some((d2) => c.host.endsWith(d2));
-      const imageUrl = risky && c.thumb ? c.thumb : c.img;
-
-      seen.add(k);
-      domainCount.set(c.host, d + 1);
-      catCount.set(c.guessedCategory, (catCount.get(c.guessedCategory) || 0) + 1);
-
-      out.push({
-        imageUrl,
-        thumbnailUrl: c.thumb,
-        sourceUrl: c.link,
-        title: c.title,
-        provider: c.host,
-        score: c.heuristicScore,
-        query: c.query,
-        category: c.guessedCategory,
-      });
-    }
-  }
-
   const response = {
     images: out,
     source: "google-cse",
@@ -754,10 +695,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       queries,
       totalCandidates: candidates.length,
       totalDeduped: deduped.length,
-      usedFarfetchFallback,
       domainCounts: Object.fromEntries(domainCount.entries()),
       categoryCounts: Object.fromEntries(catCount.entries()),
       fetch: fetchDebug,
+      farfetchBlocked: true,
+      inventory: { SITES_PER_QUERY, NUM_PER_SITE },
     },
   };
 
