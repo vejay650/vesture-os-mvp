@@ -2,7 +2,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 
-const VERSION = "moodboard-v17-PROMPT-DRIVEN-NO-HARDCODE-2026-01-25";
+const VERSION = "moodboard-v17_2-SOFTFILTER-NOZERO-2026-01-25";
 
 type Category = "shoes" | "bottoms" | "tops" | "outerwear" | "accessories" | "other";
 
@@ -11,6 +11,7 @@ type Candidate = {
   title: string;
   link: string;
   img: string;
+  thumb?: string;
   host: string;
   query: string;
   cat: Category;
@@ -19,6 +20,7 @@ type Candidate = {
 
 type ImageResult = {
   imageUrl: string;
+  thumbnailUrl?: string;
   sourceUrl: string;
   title: string;
   provider: string;
@@ -32,18 +34,17 @@ const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
 
 const BLOCKED_DOMAINS = ["pinterest.", "pinimg.com", "reddit.", "twitter.", "x.com", "tumblr."];
 
-const EXCLUDE_PATH_PARTS = [
+const NON_PRODUCT_HINTS = [
   "/editorial", "/editors", "/magazine", "/journal", "/blog", "/stories", "/story",
   "/guide", "/guides", "/help", "/customer-service", "/customer_service", "/support",
   "/about", "/privacy", "/terms", "/policies", "/lookbook", "/press", "/news", "/campaign", "/campaigns"
 ];
 
-function isNonProductPage(url: string): boolean {
-  const u = (url || "").toLowerCase();
-  for (let i = 0; i < EXCLUDE_PATH_PARTS.length; i++) {
-    if (u.includes(EXCLUDE_PATH_PARTS[i])) return true;
+function containsAny(hay: string, needles: string[]) {
+  const h = (hay || "").toLowerCase();
+  for (let i = 0; i < needles.length; i++) {
+    if (h.includes(needles[i])) return true;
   }
-  if (/(ultimate|best|top-\d+|how-to|what-is|style-guide|trend|trends)/.test(u)) return true;
   return false;
 }
 
@@ -79,7 +80,6 @@ function dedupeWords(input: string): string {
   return out.join(" ").trim();
 }
 
-// pull “shoe intent” from prompt so we don’t guess wrong
 function detectFocus(prompt: string) {
   const p = (prompt || "").toLowerCase();
   return {
@@ -94,6 +94,7 @@ function detectFocus(prompt: string) {
 function productishBoost(link: string): number {
   const u = (link || "").toLowerCase();
   let s = 0;
+
   // common product patterns
   if (u.includes("/product")) s += 10;
   if (u.includes("/products")) s += 8;
@@ -102,8 +103,10 @@ function productishBoost(link: string): number {
   if (u.includes("/dp/")) s += 6;
   if (u.includes("/sku")) s += 6;
 
-  // penalize likely non-product pages
-  if (isNonProductPage(u)) s -= 25;
+  // soft penalty for non-product pages
+  if (containsAny(u, NON_PRODUCT_HINTS)) s -= 18;
+  if (/(ultimate|best|top-\d+|how-to|what-is|style-guide|trend|trends)/.test(u)) s -= 18;
+
   return s;
 }
 
@@ -145,34 +148,30 @@ async function googleSearchOR(q: string, sites: string[], key: string, cx: strin
   return (data?.items || []) as any[];
 }
 
-// ✅ PROMPT-DRIVEN queries (no hardcoded chelsea boots)
 function buildQueriesFromPrompt(prompt: string, gender: string): string[] {
   const g = (gender || "men").toLowerCase().includes("women") ? "women" : "men";
   const p = dedupeWords(prompt);
-
   const f = detectFocus(p);
 
-  // base phrase should always include the prompt
   const base = `${g} ${p}`.trim();
-
-  // If prompt already specifies a product type (boots, jeans, blazer), we don’t force categories.
-  // But we still add a few “support pieces” so moodboards aren’t only shoes/pants.
   const qs: string[] = [];
-  qs.push(`${base} product`.trim()); // broad pull
 
+  // anchor
+  qs.push(`${base} product`.trim());
+
+  // if user mentions a category, add category-specific
   if (f.wantsShoes) qs.push(`${g} ${p} shoes`.trim());
   if (f.wantsBottoms) qs.push(`${g} ${p} trousers`.trim());
   if (f.wantsTops) qs.push(`${g} ${p} shirt`.trim());
   if (f.wantsOuterwear) qs.push(`${g} ${p} jacket`.trim());
-  if (f.wantsAccessories) qs.push(`${g} ${p} belt watch`.trim());
+  if (f.wantsAccessories) qs.push(`${g} ${p} belt watch bag`.trim());
 
-  // support items (always helpful for outfits)
+  // outfit support (helps moodboards)
   qs.push(`${g} minimal trousers ${p}`.trim());
   qs.push(`${g} clean button-up ${p}`.trim());
   qs.push(`${g} lightweight jacket ${p}`.trim());
   qs.push(`${g} leather belt ${p}`.trim());
 
-  // de-dupe queries
   const seen = new Set<string>();
   const out: string[] = [];
   for (let i = 0; i < qs.length; i++) {
@@ -182,7 +181,6 @@ function buildQueriesFromPrompt(prompt: string, gender: string): string[] {
     seen.add(q);
     out.push(q);
   }
-
   return out.slice(0, 8);
 }
 
@@ -247,44 +245,72 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         for (let ii = 0; ii < items.length; ii++) {
           const it = items[ii];
-          const img = clean(it?.link);
-          const link = clean(it?.image?.contextLink || "");
-          const title = clean(it?.title);
 
-          if (!img || !link) continue;
+          const img = clean(it?.link);
+          const thumb = clean(it?.image?.thumbnailLink);
+
+          // SAFER page URL fallback
+          const link =
+            clean(it?.image?.contextLink) ||
+            clean(it?.image?.context) ||
+            clean(it?.image?.source) ||
+            clean(it?.displayLink) ||
+            "";
+
+          const title = clean(it?.title) || clean(it?.snippet) || "";
+
+          if (!img) continue;
 
           let host = "";
           try {
-            host = normHost(new URL(link).hostname);
+            // if link is missing or not a URL, try to derive host from displayLink
+            if (link.startsWith("http")) host = normHost(new URL(link).hostname);
+            else if (clean(it?.displayLink)) host = normHost(String(it.displayLink));
           } catch {
             continue;
           }
 
+          if (!host) continue;
           if (isBlockedDomain(host)) continue;
 
-          // hard-block farfetch
+          // hard-block farfetch if user wants it blocked
           if (farfetchBlocked) {
             if (host.includes("farfetch.com")) continue;
             if ((img || "").toLowerCase().includes("farfetch-contents.com")) continue;
           }
 
-          // hard-block editorial/blog/guide
-          if (isNonProductPage(link)) continue;
+          // if we somehow got a host outside your sites list, skip it
+          // (CSE sometimes returns odd stuff)
+          let allowed = false;
+          for (let si = 0; si < sites.length; si++) {
+            const s = sites[si];
+            if (host === s || host.endsWith(`.${s}`) || s.endsWith(`.${host}`)) {
+              allowed = true;
+              break;
+            }
+          }
+          if (!allowed) continue;
 
           const cat = guessCategory(title + " " + link);
-          const pageKey = urlKeyForPage(link);
+          const pageKey = urlKeyForPage(link || img);
 
-          const baseScore = 1 + productishBoost(link);
+          // scoring
+          const score0 =
+            1 +
+            productishBoost(link) +
+            (title ? 2 : 0) +
+            (thumb ? 1 : 0);
 
           candidates.push({
-            id: `${host}::${pageKey}`,
-            title,
-            link,
+            id: `${host}::${pageKey}::${img}`,
+            title: title || host,
+            link: link || img,
             img,
+            thumb: thumb || undefined,
             host,
             query: q,
             cat,
-            score0: baseScore
+            score0
           });
 
           seenThisQuery++;
@@ -295,38 +321,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // heuristic sort
-    candidates.sort((a, b) => (b.score0 - a.score0));
+    // sort by heuristic score
+    candidates.sort((a, b) => b.score0 - a.score0);
 
     let ranked = candidates.slice(0);
     let rerankSource: "none" | "openai" | "heuristic" = "heuristic";
 
-    // Optional rerank with OpenAI (only if you have key)
+    // optional rerank with OpenAI
     const apiKey = clean(process.env.OPENAI_API_KEY);
     if (apiKey && ranked.length > 12) {
       try {
         const client = new OpenAI({ apiKey });
         const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-        const payload = ranked.slice(0, 50).map((c) => ({
+        const payload = ranked.slice(0, 60).map((c) => ({
           id: c.id,
           title: c.title,
           host: c.host,
           category: c.cat,
-          q: c.query
+          q: c.query,
+          link: c.link
         }));
 
-        const prompt =
+        const sys =
           `Return JSON ONLY: {"ranked_ids":["id1","id2",...]}.\n` +
-          `Rank by best match to user prompt: "${qParam}".\n` +
-          `Favor product pages and clear product titles. Avoid guides/editorial.\n` +
-          JSON.stringify(payload);
+          `User prompt: "${qParam}".\n` +
+          `Rank items that best match. Prefer clear product pages. Penalize editorial/blog/guide pages.\n`;
 
         const resp = await client.chat.completions.create({
           model,
-          messages: [{ role: "system", content: prompt }],
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content: JSON.stringify(payload) }
+          ],
           temperature: 0.1,
-          max_tokens: 650
+          max_tokens: 700
         });
 
         const raw = resp.choices?.[0]?.message?.content || "";
@@ -339,6 +368,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
           const reordered: Candidate[] = [];
           const used = new Set<string>();
+
           for (let i = 0; i < ids.length; i++) {
             const hit = map.get(ids[i]);
             if (hit && !used.has(hit.id)) {
@@ -346,10 +376,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               used.add(hit.id);
             }
           }
+
           for (let i = 0; i < ranked.length; i++) {
             const c = ranked[i];
             if (!used.has(c.id)) reordered.push(c);
           }
+
           ranked = reordered;
           rerankSource = "openai";
         }
@@ -358,7 +390,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // Output selection: domain diversity + category variety
+    // selection: category rotation + domain diversity
     const desired = 16;
     const perDomainCap = 2;
 
@@ -366,7 +398,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const seen = new Set<string>();
     const out: ImageResult[] = [];
 
-    const wantedOrder: Category[] = ["shoes","bottoms","tops","outerwear","accessories","shoes","bottoms","tops","outerwear"];
+    const wantedOrder: Category[] = ["shoes", "bottoms", "tops", "outerwear", "accessories", "shoes", "bottoms", "tops", "outerwear"];
 
     const canTake = (c: Candidate) => {
       if (seen.has(c.id)) return false;
@@ -380,6 +412,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       domainCount.set(c.host, (domainCount.get(c.host) || 0) + 1);
       out.push({
         imageUrl: c.img,
+        thumbnailUrl: c.thumb,
         sourceUrl: c.link,
         title: c.title,
         provider: c.host,
