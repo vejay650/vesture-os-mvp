@@ -41,7 +41,7 @@ const BLOCK_TITLE_TERMS = [
 ];
 
 function containsAny(hay: string, needles: string[]) {
-  const s = hay.toLowerCase();
+  const s = (hay || "").toLowerCase();
   for (let i = 0; i < needles.length; i++) {
     if (s.indexOf(needles[i].toLowerCase()) !== -1) return true;
   }
@@ -56,7 +56,6 @@ function isBlockedPage(urlStr: string, title: string) {
   return false;
 }
 
-// stronger “product-ish” detection (helps avoid guides)
 function looksProductLike(urlStr: string) {
   const u = (urlStr || "").toLowerCase();
   return (
@@ -66,12 +65,11 @@ function looksProductLike(urlStr: string) {
     u.indexOf("/item") !== -1 ||
     u.indexOf("/shop") !== -1 ||
     u.indexOf("/dp/") !== -1 ||
-    u.indexOf("/sku") !== -1
+    u.indexOf("/sku") !== -1 ||
+    u.indexOf("?sku") !== -1
   );
 }
 
-// ✅ Keep a SMALL launch set that actually returns product pages reliably.
-// You can expand later once stable.
 function getRetailerSites(): string[] {
   const env = clean(process.env.RETAILER_SITES || "");
   if (env) {
@@ -79,49 +77,30 @@ function getRetailerSites(): string[] {
       .split(",")
       .map(normHost)
       .filter(Boolean)
-      .filter((x) => x !== "farfetch.com"); // optional hard block
+      .filter((x) => x !== "farfetch.com");
   }
-  // fallback if env missing
-  return [
-    "ssense.com",
-    "yoox.com",
-    "neimanmarcus.com",
-    "ourlegacy.com",
-    "moncler.com"
-  ];
+  return ["ssense.com", "yoox.com", "neimanmarcus.com"];
 }
 
-// Build a strict Google query that:
-// - uses site: OR group (forces multi-site)
-// - uses negative keywords AND inurl negatives (stops editorial)
-// - nudges product intent
-function buildGoogleQuery(prompt: string, gender: string, sites: string[]) {
+function buildSiteQuery(prompt: string, gender: string, site: string) {
   const g = gender ? gender : "men";
   const p = prompt || "date night outfit";
-
-  const siteGroup = sites.map((s) => "site:" + s).join(" OR ");
-
   const negatives =
     "-editorial -guide -market -magazine -journal -blog -stories -lookbook -press -campaign";
   const inurlNeg =
     "-inurl:editorial -inurl:guide -inurl:market -inurl:magazine -inurl:blog -inurl:stories -inurl:lookbook -inurl:press -inurl:campaign";
 
-  // NOTE: ( ... ) grouping works in Google query syntax
-  return `${g} ${p} product ${negatives} ${inurlNeg} (${siteGroup})`.trim();
+  return `${g} ${p} product ${negatives} ${inurlNeg} site:${site}`.trim();
 }
 
-async function googleImageSearch(
-  q: string,
-  key: string,
-  cx: string,
-  num: number
-): Promise<any[]> {
+async function googleImageSearch(q: string, key: string, cx: string, start: number): Promise<any[]> {
   const url = new URL("https://www.googleapis.com/customsearch/v1");
   url.searchParams.set("q", q);
   url.searchParams.set("cx", cx);
   url.searchParams.set("key", key);
   url.searchParams.set("searchType", "image");
-  url.searchParams.set("num", String(Math.min(Math.max(num, 1), 10)));
+  url.searchParams.set("num", "10");
+  url.searchParams.set("start", String(start));
   url.searchParams.set("safe", "active");
 
   const res = await fetch(url.toString());
@@ -140,79 +119,98 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    const prompt = clean((req.query.q as any) || (req.body && (req.body as any).q) || "");
-    const gender = clean((req.query.gender as any) || (req.body && (req.body as any).gender) || "men");
-    const desiredRaw = Number((req.query.count as any) || (req.body && (req.body as any).count) || 18);
+    const prompt =
+      clean((req.query.q as any) || (req.body && (req.body as any).q) || "");
+    const gender =
+      clean((req.query.gender as any) || (req.body && (req.body as any).gender) || "men");
+    const desiredRaw =
+      Number((req.query.count as any) || (req.body && (req.body as any).count) || 18);
     const desired = Math.min(Math.max(isFinite(desiredRaw) ? desiredRaw : 18, 6), 24);
 
     const sites = getRetailerSites();
 
-    // Build 3 variations so results don’t get stuck
+    // 3 prompt variants (keeps it “smart” without hardcoding chelsea boots etc.)
     const base = prompt || "black minimal date night boots";
-    const queries = [
-      buildGoogleQuery(base, gender, sites),
-      buildGoogleQuery(base + " shoes", gender, sites),
-      buildGoogleQuery(base + " outfit", gender, sites)
-    ];
+    const variants = [base, base + " shoes", base + " outfit"];
 
     const seen = new Set<string>();
     const out: ImageResult[] = [];
     const domainsUsed: { [k: string]: number } = {};
+    const debugFetch: any = {};
 
-    for (let qi = 0; qi < queries.length; qi++) {
-      const q = queries[qi];
-      const items = await googleImageSearch(q, key, cx, 10);
+    // hard cap per domain so nothing dominates
+    const perDomainCap = 4;
 
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        const imageUrl = clean(it && it.link);
-        const sourceUrl = clean((it && it.image && it.image.contextLink) || "");
-        const title = clean((it && it.title) || "");
+    // SITE-BY-SITE search (best reliability)
+    for (let vi = 0; vi < variants.length; vi++) {
+      const vPrompt = variants[vi];
 
-        if (!imageUrl || !sourceUrl) continue;
+      for (let si = 0; si < sites.length; si++) {
+        const site = sites[si];
+        const q = buildSiteQuery(vPrompt, gender, site);
 
-        let host = "";
-        try {
-          host = normHost(new URL(sourceUrl).hostname);
-        } catch {
-          continue;
-        }
+        // try first 2 pages (start=1, start=11)
+        const starts = [1, 11];
+        for (let pi = 0; pi < starts.length; pi++) {
+          const start = starts[pi];
+          const items = await googleImageSearch(q, key, cx, start);
 
-        // allowlist check
-        let allowed = false;
-        for (let s = 0; s < sites.length; s++) {
-          const site = sites[s];
-          if (host === site || host.endsWith("." + site) || host.indexOf(site) !== -1) {
-            allowed = true;
-            break;
+          debugFetch[q] = debugFetch[q] || { pages: 0, itemsSeen: 0 };
+          debugFetch[q].pages += 1;
+          debugFetch[q].itemsSeen += items.length;
+
+          for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            const imageUrl = clean(it && it.link);
+            const sourceUrl = clean((it && it.image && it.image.contextLink) || "");
+            const title = clean((it && it.title) || "");
+
+            if (!imageUrl || !sourceUrl) continue;
+
+            let host = "";
+            try {
+              host = normHost(new URL(sourceUrl).hostname);
+            } catch {
+              continue;
+            }
+
+            // must match this site (or its subdomains)
+            const sHost = normHost(site);
+            if (!(host === sHost || host.endsWith("." + sHost) || host.indexOf(sHost) !== -1)) {
+              continue;
+            }
+
+            if (isBlockedPage(sourceUrl, title)) continue;
+
+            const domainCount = domainsUsed[host] || 0;
+            if (domainCount >= perDomainCap) continue;
+
+            const k = sourceUrl + "::" + imageUrl;
+            if (seen.has(k)) continue;
+            seen.add(k);
+
+            let score = 10;
+            if (looksProductLike(sourceUrl)) score += 12;
+            score -= vi; // prefer base prompt variant
+            score -= pi; // prefer earlier page
+
+            domainsUsed[host] = domainCount + 1;
+
+            out.push({
+              imageUrl,
+              thumbnailUrl: clean(it && it.image && it.image.thumbnailLink),
+              sourceUrl,
+              title,
+              provider: host,
+              score,
+              query: q
+            });
+
+            if (out.length >= desired) break;
           }
+
+          if (out.length >= desired) break;
         }
-        if (!allowed) continue;
-
-        // HARD BLOCK editorial/guide pages
-        if (isBlockedPage(sourceUrl, title)) continue;
-
-        // dedupe
-        const k = sourceUrl + "::" + imageUrl;
-        if (seen.has(k)) continue;
-        seen.add(k);
-
-        // scoring: prefer product-like urls
-        let score = 10;
-        if (looksProductLike(sourceUrl)) score += 10;
-        score -= qi; // earlier query variant gets slight preference
-
-        domainsUsed[host] = (domainsUsed[host] || 0) + 1;
-
-        out.push({
-          imageUrl,
-          thumbnailUrl: clean(it && it.image && it.image.thumbnailLink),
-          sourceUrl,
-          title,
-          provider: host,
-          score,
-          query: q
-        });
 
         if (out.length >= desired) break;
       }
@@ -220,17 +218,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (out.length >= desired) break;
     }
 
-    // If still empty, return debug + hint (but don’t crash UI)
+    // sort by score, stable-ish
+    out.sort(function (a, b) {
+      return (b.score || 0) - (a.score || 0);
+    });
+
     return res.status(200).json({
       images: out,
       source: "google-cse",
       debug: {
-        version: "moodboard-v18-SSENSE-EDITORIAL-BLOCK-SITEGROUP",
+        version: "moodboard-v19-SITE-BY-SITE-RELIABLE",
         prompt,
+        gender,
         sites,
-        queries,
+        variants,
         totalCandidates: out.length,
-        domainsUsed
+        domainsUsed,
+        fetch: debugFetch
       }
     });
   } catch (err: any) {
