@@ -1,243 +1,440 @@
+// pages/api/moodboard.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+
+const VERSION = "moodboard-v20-WEB-FALLBACK-2026-02-01";
+
+/**
+ * REQUIRED ENV VARS on Vercel:
+ * - GOOGLE_CSE_API_KEY
+ * - GOOGLE_CSE_CX
+ */
+
+type Gender = "men" | "women" | "unisex";
 
 type ImageResult = {
   imageUrl: string;
   thumbnailUrl?: string;
   sourceUrl: string;
-  title: string;
-  provider: string;
-  score: number;
-  query: string;
+  title?: string;
+  provider?: string;
+  category?: string;
+  score?: number;
+  query?: string;
 };
 
-const clean = (v: any) => (typeof v === "string" ? v.trim() : "");
-const normHost = (h: string) => clean(h).replace(/^www\./i, "").toLowerCase();
+type Candidate = ImageResult & {
+  _host: string;
+  _q: string;
+};
 
-const BLOCK_PATHS = [
-  "/editorial/",
-  "/magazine/",
-  "/journal/",
-  "/blog/",
-  "/stories/",
-  "/story/",
-  "/lookbook/",
-  "/press/",
-  "/campaign/",
-  "/guides/",
-  "/guide/",
-  "/market/"
+const DEFAULT_SITES = [
+  "ssense.com",
+  "yoox.com",
+  "neimanmarcus.com",
+  "ourlegacy.com",
+  "moncler.com",
+  "louisvuitton.com",
+  "bottegaveneta.com",
+  "us.supreme.com",
 ];
 
-const BLOCK_TITLE_TERMS = [
-  "editorial",
-  "guide",
-  "trends",
-  "fashion month",
-  "how to",
-  "best of",
-  "ultimate",
-  "season",
-  "shows"
-];
+/**
+ * If you want to FULLY block Farfetch, keep true.
+ * If you want it allowed as a LAST resort, set false.
+ */
+const BLOCK_FARFETCH = true;
 
-function containsAny(hay: string, needles: string[]) {
-  const s = (hay || "").toLowerCase();
-  for (let i = 0; i < needles.length; i++) {
-    if (s.indexOf(needles[i].toLowerCase()) !== -1) return true;
-  }
-  return false;
+const HARD_BLOCK_HOSTS = new Set<string>([
+  ...(BLOCK_FARFETCH ? ["farfetch.com"] : []),
+]);
+
+/**
+ * URLs we DO NOT want (SSENSE editorial etc).
+ * We also exclude “guide / editorial / blog / magazine” type content from any site.
+ */
+const URL_EXCLUDE_REGEX = new RegExp(
+  [
+    "/editorial/",
+    "/market/",
+    "/magazine/",
+    "/blog/",
+    "/stories/",
+    "/journal/",
+    "/press/",
+    "/campaign/",
+    "/lookbook/",
+    "/guide",
+    "utm_",
+  ].join("|"),
+  "i"
+);
+
+const TITLE_EXCLUDE_REGEX = new RegExp(
+  [
+    "editorial",
+    "guide",
+    "market",
+    "magazine",
+    "journal",
+    "blog",
+    "stories",
+    "lookbook",
+    "press",
+    "campaign",
+  ].join("|"),
+  "i"
+);
+
+function safeString(x: any): string {
+  return typeof x === "string" ? x : "";
 }
 
-function isBlockedPage(urlStr: string, title: string) {
-  const u = (urlStr || "").toLowerCase();
-  const t = (title || "").toLowerCase();
-  if (containsAny(u, BLOCK_PATHS)) return true;
-  if (containsAny(t, BLOCK_TITLE_TERMS)) return true;
-  return false;
-}
-
-function looksProductLike(urlStr: string) {
-  const u = (urlStr || "").toLowerCase();
-  return (
-    u.indexOf("/product") !== -1 ||
-    u.indexOf("/products") !== -1 ||
-    u.indexOf("/p/") !== -1 ||
-    u.indexOf("/item") !== -1 ||
-    u.indexOf("/shop") !== -1 ||
-    u.indexOf("/dp/") !== -1 ||
-    u.indexOf("/sku") !== -1 ||
-    u.indexOf("?sku") !== -1
-  );
-}
-
-function getRetailerSites(): string[] {
-  const env = clean(process.env.RETAILER_SITES || "");
-  if (env) {
-    return env
-      .split(",")
-      .map(normHost)
-      .filter(Boolean)
-      .filter((x) => x !== "farfetch.com");
-  }
-  return ["ssense.com", "yoox.com", "neimanmarcus.com"];
-}
-
-function buildSiteQuery(prompt: string, gender: string, site: string) {
-  const g = gender ? gender : "men";
-  const p = prompt || "date night outfit";
-  const negatives =
-    "-editorial -guide -market -magazine -journal -blog -stories -lookbook -press -campaign";
-  const inurlNeg =
-    "-inurl:editorial -inurl:guide -inurl:market -inurl:magazine -inurl:blog -inurl:stories -inurl:lookbook -inurl:press -inurl:campaign";
-
-  return `${g} ${p} product ${negatives} ${inurlNeg} site:${site}`.trim();
-}
-
-async function googleImageSearch(q: string, key: string, cx: string, start: number): Promise<any[]> {
-  const url = new URL("https://www.googleapis.com/customsearch/v1");
-  url.searchParams.set("q", q);
-  url.searchParams.set("cx", cx);
-  url.searchParams.set("key", key);
-  url.searchParams.set("searchType", "image");
-  url.searchParams.set("num", "10");
-  url.searchParams.set("start", String(start));
-  url.searchParams.set("safe", "active");
-
-  const res = await fetch(url.toString());
-  if (!res.ok) return [];
-  const data = await res.json();
-  return (data && data.items) ? data.items : [];
-}
-
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+function normalizeHost(urlStr: string): string {
   try {
-    const key = clean(process.env.GOOGLE_CSE_KEY);
-    const cx = clean(process.env.GOOGLE_CSE_ID);
-    if (!key || !cx) {
-      return res.status(500).json({
-        error: "Missing GOOGLE_CSE_KEY or GOOGLE_CSE_ID in Vercel env vars."
-      });
+    const u = new URL(urlStr);
+    return u.hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function uniqStrings(arr: string[]) {
+  return Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
+}
+
+function pickGender(req: NextApiRequest): Gender {
+  const g =
+    safeString(req.query.gender) ||
+    safeString((req.body as any)?.gender) ||
+    "men";
+  const gl = g.toLowerCase();
+  if (gl === "women") return "women";
+  if (gl === "unisex") return "unisex";
+  return "men";
+}
+
+function readPrompt(req: NextApiRequest): string {
+  // Accept GET or POST
+  const fromQuery = safeString(req.query.prompt);
+  const fromBody = safeString((req.body as any)?.prompt);
+  const prompt = (fromQuery || fromBody || "").trim();
+  return prompt;
+}
+
+function readSites(req: NextApiRequest): string[] {
+  const qSites = safeString(req.query.sites);
+  const bSites = (req.body as any)?.sites;
+
+  let sites: string[] = [];
+
+  if (qSites) {
+    sites = qSites.split(",").map((s) => s.trim());
+  } else if (Array.isArray(bSites)) {
+    sites = bSites.map((s) => String(s).trim());
+  } else {
+    sites = DEFAULT_SITES.slice();
+  }
+
+  // normalize hostnames
+  sites = sites
+    .map((s) => s.replace(/^https?:\/\//, ""))
+    .map((s) => s.replace(/^www\./, ""))
+    .map((s) => s.split("/")[0])
+    .map((s) => s.toLowerCase())
+    .filter(Boolean);
+
+  return uniqStrings(sites);
+}
+
+function buildQueries(prompt: string, gender: Gender): string[] {
+  // Prompt-driven. No hardcoded “chelsea boots” nonsense.
+  // We keep it simple and high-signal, because over-complicating kills retrieval.
+  const who =
+    gender === "women" ? "women" : gender === "unisex" ? "unisex" : "men";
+  const p = prompt.trim();
+
+  const base = [
+    `${who} ${p}`,
+    `${who} ${p} shoes`,
+    `${who} ${p} boots`,
+    `${who} ${p} outfit`,
+    `${who} ${p} jacket`,
+    `${who} ${p} trousers`,
+  ];
+
+  return uniqStrings(base).slice(0, 6);
+}
+
+function shouldRejectCandidate(c: Candidate): boolean {
+  if (!c.sourceUrl || !c.imageUrl) return true;
+
+  const host = (c._host || "").toLowerCase();
+  if (HARD_BLOCK_HOSTS.has(host)) return true;
+
+  if (URL_EXCLUDE_REGEX.test(c.sourceUrl)) return true;
+  if (c.title && TITLE_EXCLUDE_REGEX.test(c.title)) return true;
+
+  // Avoid obvious non-product/editorial garbage
+  if (c.sourceUrl.includes("/editorial/")) return true;
+
+  return false;
+}
+
+async function googleCseImageSearch(q: string): Promise<any> {
+  const key = process.env.GOOGLE_CSE_API_KEY;
+  const cx = process.env.GOOGLE_CSE_CX;
+  if (!key || !cx) {
+    throw new Error("Missing GOOGLE_CSE_API_KEY or GOOGLE_CSE_CX");
+  }
+
+  const params = new URLSearchParams({
+    key,
+    cx,
+    q,
+    searchType: "image",
+    num: "10",
+    safe: "active",
+  });
+
+  const url = `https://www.googleapis.com/customsearch/v1?${params.toString()}`;
+
+  const r = await fetch(url);
+  const status = r.status;
+  const text = await r.text();
+
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { raw: text };
+  }
+
+  if (!r.ok) {
+    const err = new Error(`CSE error ${status}`);
+    (err as any).status = status;
+    (err as any).payload = json;
+    throw err;
+  }
+
+  return json;
+}
+
+function extractCandidates(json: any, q: string): Candidate[] {
+  const items = Array.isArray(json?.items) ? json.items : [];
+  const out: Candidate[] = [];
+
+  for (const it of items) {
+    const imageUrl = safeString(it?.link);
+    const sourceUrl = safeString(it?.image?.contextLink) || safeString(it?.image?.thumbnailLink);
+    const thumb = safeString(it?.image?.thumbnailLink);
+    const title = safeString(it?.title);
+    const host = normalizeHost(sourceUrl);
+
+    if (!imageUrl || !sourceUrl || !host) continue;
+
+    out.push({
+      imageUrl,
+      thumbnailUrl: thumb || undefined,
+      sourceUrl,
+      title: title || undefined,
+      provider: host,
+      category: undefined,
+      score: 0,
+      query: q,
+      _host: host,
+      _q: q,
+    });
+  }
+
+  return out;
+}
+
+function rankCandidates(cands: Candidate[], prompt: string): Candidate[] {
+  const p = prompt.toLowerCase();
+
+  // simple lexical scoring
+  for (const c of cands) {
+    let s = 0;
+    const t = (c.title || "").toLowerCase();
+    const u = (c.sourceUrl || "").toLowerCase();
+
+    // reward if prompt words appear in title/url
+    for (const w of p.split(/\s+/).filter(Boolean)) {
+      if (w.length <= 2) continue;
+      if (t.includes(w)) s += 3;
+      if (u.includes(w)) s += 2;
     }
 
-    const prompt =
-      clean((req.query.q as any) || (req.body && (req.body as any).q) || "");
-    const gender =
-      clean((req.query.gender as any) || (req.body && (req.body as any).gender) || "men");
-    const desiredRaw =
-      Number((req.query.count as any) || (req.body && (req.body as any).count) || 18);
-    const desired = Math.min(Math.max(isFinite(desiredRaw) ? desiredRaw : 18, 6), 24);
+    // prefer product-y urls
+    if (u.includes("/product") || u.includes("/products") || u.includes("/shop")) s += 4;
 
-    const sites = getRetailerSites();
+    // avoid editorial-ish even if it slipped through
+    if (URL_EXCLUDE_REGEX.test(u)) s -= 20;
 
-    // 3 prompt variants (keeps it “smart” without hardcoding chelsea boots etc.)
-    const base = prompt || "black minimal date night boots";
-    const variants = [base, base + " shoes", base + " outfit"];
+    c.score = s;
+  }
 
-    const seen = new Set<string>();
-    const out: ImageResult[] = [];
-    const domainsUsed: { [k: string]: number } = {};
-    const debugFetch: any = {};
+  return cands.sort((a, b) => (b.score || 0) - (a.score || 0));
+}
 
-    // hard cap per domain so nothing dominates
-    const perDomainCap = 4;
+function dedupeAndLimit(cands: Candidate[], limit: number): ImageResult[] {
+  const seen = new Set<string>();
+  const out: ImageResult[] = [];
 
-    // SITE-BY-SITE search (best reliability)
-    for (let vi = 0; vi < variants.length; vi++) {
-      const vPrompt = variants[vi];
+  for (const c of cands) {
+    const key = `${c.sourceUrl}::${c.imageUrl}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-      for (let si = 0; si < sites.length; si++) {
-        const site = sites[si];
-        const q = buildSiteQuery(vPrompt, gender, site);
-
-        // try first 2 pages (start=1, start=11)
-        const starts = [1, 11];
-        for (let pi = 0; pi < starts.length; pi++) {
-          const start = starts[pi];
-          const items = await googleImageSearch(q, key, cx, start);
-
-          debugFetch[q] = debugFetch[q] || { pages: 0, itemsSeen: 0 };
-          debugFetch[q].pages += 1;
-          debugFetch[q].itemsSeen += items.length;
-
-          for (let i = 0; i < items.length; i++) {
-            const it = items[i];
-            const imageUrl = clean(it && it.link);
-            const sourceUrl = clean((it && it.image && it.image.contextLink) || "");
-            const title = clean((it && it.title) || "");
-
-            if (!imageUrl || !sourceUrl) continue;
-
-            let host = "";
-            try {
-              host = normHost(new URL(sourceUrl).hostname);
-            } catch {
-              continue;
-            }
-
-            // must match this site (or its subdomains)
-            const sHost = normHost(site);
-            if (!(host === sHost || host.endsWith("." + sHost) || host.indexOf(sHost) !== -1)) {
-              continue;
-            }
-
-            if (isBlockedPage(sourceUrl, title)) continue;
-
-            const domainCount = domainsUsed[host] || 0;
-            if (domainCount >= perDomainCap) continue;
-
-            const k = sourceUrl + "::" + imageUrl;
-            if (seen.has(k)) continue;
-            seen.add(k);
-
-            let score = 10;
-            if (looksProductLike(sourceUrl)) score += 12;
-            score -= vi; // prefer base prompt variant
-            score -= pi; // prefer earlier page
-
-            domainsUsed[host] = domainCount + 1;
-
-            out.push({
-              imageUrl,
-              thumbnailUrl: clean(it && it.image && it.image.thumbnailLink),
-              sourceUrl,
-              title,
-              provider: host,
-              score,
-              query: q
-            });
-
-            if (out.length >= desired) break;
-          }
-
-          if (out.length >= desired) break;
-        }
-
-        if (out.length >= desired) break;
-      }
-
-      if (out.length >= desired) break;
-    }
-
-    // sort by score, stable-ish
-    out.sort(function (a, b) {
-      return (b.score || 0) - (a.score || 0);
+    out.push({
+      imageUrl: c.imageUrl,
+      thumbnailUrl: c.thumbnailUrl,
+      sourceUrl: c.sourceUrl,
+      title: c.title,
+      provider: c.provider,
+      category: c.category,
+      score: c.score,
+      query: c.query,
     });
 
-    return res.status(200).json({
-      images: out,
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * Build a query that prefers sites but DOESN'T hard-restrict
+ * (so you still get results if sites have weak indexing).
+ */
+function preferSitesQuery(baseQ: string, sites: string[]): string {
+  if (!sites.length) return baseQ;
+
+  // Prefer sites by adding them as soft terms, not site: filters
+  // (site: filters are too strict and often return 0)
+  const siteHints = sites.slice(0, 6).map((s) => `"${s}"`).join(" OR ");
+  return `${baseQ} (${siteHints})`;
+}
+
+/**
+ * If site-preferred search returns 0, we fallback to pure web search:
+ * remove site hints entirely.
+ */
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const started = Date.now();
+
+  if (req.method !== "GET" && req.method !== "POST") {
+    res.setHeader("Allow", ["GET", "POST"]);
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const prompt = readPrompt(req);
+  const gender = pickGender(req);
+  const sites = readSites(req);
+  const desired = clamp(Number(req.query.desired || (req.body as any)?.desired || 18), 1, 30);
+
+  // If your UI calls on page load, this will expose the bug immediately.
+  if (!prompt) {
+    return res.status(400).json({
+      images: [],
       source: "google-cse",
       debug: {
-        version: "moodboard-v19-SITE-BY-SITE-RELIABLE",
-        prompt,
-        gender,
-        sites,
-        variants,
-        totalCandidates: out.length,
-        domainsUsed,
-        fetch: debugFetch
-      }
+        version: VERSION,
+        error: "EMPTY_PROMPT",
+        received: {
+          method: req.method,
+          queryPrompt: safeString(req.query.prompt),
+          bodyPrompt: safeString((req.body as any)?.prompt),
+        },
+        note: "Your frontend is calling /api/moodboard without a prompt. Only call after user hits Generate.",
+      },
     });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || "Unexpected error" });
   }
+
+  const baseQueries = buildQueries(prompt, gender);
+
+  const debug: any = {
+    version: VERSION,
+    prompt,
+    gender,
+    sites,
+    queries: baseQueries,
+    totalCandidates: 0,
+    domainsUsed: {} as Record<string, number>,
+    usedWebFallback: false,
+    farfetchBlocked: BLOCK_FARFETCH,
+    ms: 0,
+  };
+
+  const all: Candidate[] = [];
+
+  // 1) Try “site-preferred” (soft preference, not hard filters)
+  for (const q0 of baseQueries) {
+    const q = preferSitesQuery(q0, sites);
+
+    try {
+      const json = await googleCseImageSearch(q);
+      const cands = extractCandidates(json, q0);
+
+      for (const c of cands) {
+        if (shouldRejectCandidate(c)) continue;
+        all.push(c);
+      }
+    } catch (e: any) {
+      // If CSE rate limits, surface it clearly
+      const status = e?.status;
+      if (status === 429) {
+        debug.rateLimited429 = true;
+        break;
+      }
+      debug.lastError = { status, message: String(e?.message || e) };
+    }
+  }
+
+  // 2) If we got nothing, fallback to entire web (this is what makes it reliably WORK)
+  if (all.length === 0 && !debug.rateLimited429) {
+    debug.usedWebFallback = true;
+
+    for (const q0 of baseQueries) {
+      const q = q0; // no site hints at all
+
+      try {
+        const json = await googleCseImageSearch(q);
+        const cands = extractCandidates(json, q0);
+
+        for (const c of cands) {
+          if (shouldRejectCandidate(c)) continue;
+          all.push(c);
+        }
+      } catch (e: any) {
+        const status = e?.status;
+        if (status === 429) {
+          debug.rateLimited429 = true;
+          break;
+        }
+        debug.lastError = { status, message: String(e?.message || e) };
+      }
+    }
+  }
+
+  // Domain counts
+  for (const c of all) {
+    debug.domainsUsed[c._host] = (debug.domainsUsed[c._host] || 0) + 1;
+  }
+
+  debug.totalCandidates = all.length;
+
+  const ranked = rankCandidates(all, prompt);
+  const images = dedupeAndLimit(ranked, desired);
+
+  debug.ms = Date.now() - started;
+
+  return res.status(200).json({
+    images,
+    source: "google-cse",
+    debug,
+  });
 }
