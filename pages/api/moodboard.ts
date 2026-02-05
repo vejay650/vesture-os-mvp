@@ -1,44 +1,137 @@
-// pages/api/moodboard.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
 type Gender = "men" | "women" | "unisex";
+type Category = "shoes" | "bottoms" | "tops" | "outerwear" | "accessories";
 
 type ImageResult = {
   imageUrl: string;
   thumbnailUrl?: string;
   sourceUrl: string;
-  title: string;
-  provider: string;
-  category: "shoes" | "bottoms" | "tops" | "outerwear" | "accessories" | "other";
-  score: number;
-  query: string;
+  title?: string;
+  provider?: string;
+  category?: Category;
+  score?: number;
+  query?: string;
 };
 
 type Candidate = {
-  title: string;
   link: string;
   img: string;
   thumb?: string;
-  host: string;
-  query: string;
-  category: ImageResult["category"];
+  title?: string;
+  displayLink?: string;
+  query?: string;
 };
 
-const VERSION = "moodboard-v22-PASTEALL-CATEGORY-DIVERSITY-2026-02-04";
+type CseItem = {
+  link?: string;
+  title?: string;
+  displayLink?: string;
+  pagemap?: any;
+};
 
-// ---------- Config ----------
+type CseResp = {
+  items?: CseItem[];
+};
+
+const VERSION = "moodboard-v23-SITE-ROTATION-PRODUCT-ONLY-2026-02-04";
+
+// ---------- config ----------
 const DEFAULT_DESIRED = 18;
 const PER_DOMAIN_CAP = 3;
-const MAX_PAGES = 2; // pages per query (each page = 10 results from CSE)
-const NUM_PER_PAGE = 10;
+const PER_CATEGORY_MIN = 1; // try to get at least 1 from each category if possible
 
-const FARFETCH_BLOCKED = true; // you said you DON'T want farfetch dominating
+// Sites that actually return product pages reliably via CSE.
+// (You can add/remove later; this set is a strong “works-now” baseline.)
+const DEFAULT_SITES: string[] = [
+  "ssense.com",
+  "mrporter.com",
+  "endclothing.com",
+  "nordstrom.com",
+  "saksfifthavenue.com",
+  "neimanmarcus.com",
+  "yoox.com",
+  "ourlegacy.com",
+];
 
-// These words are poison for your use-case (Neiman returns tons of this)
-const BLOCKED_WORDS = [
+// Domains we do NOT want (you said Farfetch domination was trash)
+const BLOCKED_DOMAINS = new Set<string>([
+  "farfetch.com",
+  "www.farfetch.com",
+]);
+
+// Product URL allow rules per domain (keeps out editorials / category pages / blog pages)
+function isLikelyProductUrl(domain: string, url: string, gender: Gender) {
+  const u = url.toLowerCase();
+
+  // general “bad” paths
+  const bad =
+    u.includes("/editorial/") ||
+    u.includes("/magazine/") ||
+    u.includes("/blog") ||
+    u.includes("/stories") ||
+    u.includes("/guide") ||
+    u.includes("/market") ||
+    u.includes("/journal") ||
+    u.includes("/press") ||
+    u.includes("/campaign") ||
+    u.includes("/lookbook");
+
+  if (bad) return false;
+
+  if (domain.includes("ssense.com")) {
+    // SSENSE product pages look like: /en-us/men/product/brand/item/########
+    if (!u.includes("/men/product/") && gender === "men") return false;
+    if (!u.includes("/women/product/") && gender === "women") return false;
+    if (u.includes("/editorial/")) return false;
+    return true;
+  }
+
+  if (domain.includes("mrporter.com")) {
+    // MR PORTER product pages usually include /en-us/mens/product/ OR /en-us/mens/product/...
+    return u.includes("/mens/product/");
+  }
+
+  if (domain.includes("endclothing.com")) {
+    // END product pages often include /us/brand/product-name/########
+    // Keep it loose but exclude obvious non-product
+    return !u.includes("/features/") && !u.includes("/journal/");
+  }
+
+  if (domain.includes("nordstrom.com")) {
+    // Nordstrom product pages usually have /s/slug/########
+    return u.includes("/s/") && /\d{6,}/.test(u);
+  }
+
+  if (domain.includes("saksfifthavenue.com")) {
+    // Saks product pages often include /product/...
+    return u.includes("/product/");
+  }
+
+  if (domain.includes("neimanmarcus.com")) {
+    // Neiman product: /p/slug-prod########## OR product.jsp?itemId=
+    return u.includes("/p/") || u.includes("product.jsp?itemid=");
+  }
+
+  if (domain.includes("yoox.com")) {
+    // Yoox product pages vary; keep loose but avoid obvious category pages
+    return !u.includes("/shoponline/") ? true : true;
+  }
+
+  if (domain.includes("ourlegacy.com")) {
+    // Our Legacy products generally under /product/...
+    return u.includes("/product/");
+  }
+
+  // default: allow but keep other filters in place
+  return true;
+}
+
+// These negatives stop perfume/beauty/etc poisoning results (esp department stores)
+const NEGATIVE_TERMS = [
   "perfume",
-  "parfum",
   "fragrance",
+  "parfum",
   "cologne",
   "beauty",
   "skincare",
@@ -47,521 +140,317 @@ const BLOCKED_WORDS = [
   "foundation",
   "serum",
   "cream",
-  "shampoo",
-  "conditioner",
+  "candle",
+  "diffuser",
   "sandal",
   "slide",
   "thong",
-  "flip flop",
-  "women",
-  "womens",
-  "female",
+  "flip-flop",
   "over-the-knee",
-  "over the knee",
   "otk",
 ];
 
-// SSENSE returns editorials constantly — block them
-const BLOCKED_PATH_SNIPPETS = [
-  "/editorial",
-  "/market/",
-  "/fashion/",
-  "/guides/",
-  "/guide/",
-  "/blog",
-  "/stories",
-  "/lookbook",
-  "/press",
-  "/campaign",
-];
+// ---------- tiny cache (serverless-safe best effort) ----------
+const CACHE_TTL_MS = 1000 * 60 * 10; // 10 min
 
-// Negative terms appended to queries (helps before we even filter results)
-const NEGATIVE_TERMS =
-  `-perfume -fragrance -parfum -cologne -beauty -skincare -makeup ` +
-  `-sandal -slide -thong -flip -women -womens -female -over-the-knee -otk ` +
-  `-editorial -guide -market -magazine -journal -blog -stories -lookbook -press -campaign ` +
-  `-inurl:editorial -inurl:guide -inurl:market -inurl:magazine -inurl:blog -inurl:stories -inurl:lookbook -inurl:press -inurl:campaign`;
+type CacheEntry = { at: number; data: any };
+const g: any = globalThis as any;
+if (!g.__moodboardCache) g.__moodboardCache = new Map<string, CacheEntry>();
+const cache: Map<string, CacheEntry> = g.__moodboardCache;
 
-// ---------- Helpers ----------
-function toStr(x: unknown, fallback = ""): string {
-  return typeof x === "string" ? x : fallback;
+function cacheGet(key: string) {
+  const e = cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.at > CACHE_TTL_MS) {
+    cache.delete(key);
+    return null;
+  }
+  return e.data;
+}
+function cacheSet(key: string, data: any) {
+  cache.set(key, { at: Date.now(), data });
 }
 
-function normalizeHost(url: string): string {
+// ---------- helpers ----------
+function pickThumb(item: CseItem): { img?: string; thumb?: string } {
+  const pm = item?.pagemap;
+  const cseImg = pm?.cse_image?.[0]?.src;
+  const cseThumb = pm?.cse_thumbnail?.[0]?.src;
+
+  // sometimes OG image is better
+  const ogImg = pm?.metatags?.[0]?.["og:image"];
+
+  const img = ogImg || cseImg;
+  const thumb = cseThumb || ogImg || cseImg;
+
+  return { img, thumb };
+}
+
+function domainOf(url: string) {
   try {
-    const u = new URL(url);
-    return u.hostname.replace(/^www\./, "");
+    return new URL(url).hostname.replace(/^www\./, "");
   } catch {
-    // sometimes "link" might be malformed; attempt minimal
-    return url.replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "");
+    return "";
   }
 }
 
-function looksLikeProduct(title: string, link: string): boolean {
-  const t = `${title} ${link}`.toLowerCase();
-
-  // kill obvious non-product pages
-  for (const p of BLOCKED_PATH_SNIPPETS) {
-    if (t.includes(p)) return false;
-  }
-
-  // Neiman category pages and misc: we want product pages more than category pages,
-  // but keep some categories if they still have a good image.
-  // (we’ll still filter the junk below)
-  return true;
+function normalizePrompt(p: any) {
+  return String(p || "").trim();
 }
 
-function isBlockedCandidate(title: string, link: string): boolean {
-  const t = `${title} ${link}`.toLowerCase();
-  return BLOCKED_WORDS.some((w) => t.includes(w));
-}
-
-function inferCategory(q: string): ImageResult["category"] {
+function detectCategory(q: string): Category | undefined {
   const s = q.toLowerCase();
-
-  if (
-    s.includes("boot") ||
-    s.includes("shoe") ||
-    s.includes("loafer") ||
-    s.includes("derby") ||
-    s.includes("oxford") ||
-    s.includes("sneaker")
-  )
-    return "shoes";
-
-  if (
-    s.includes("trouser") ||
-    s.includes("pants") ||
-    s.includes("jeans") ||
-    s.includes("chinos") ||
-    s.includes("slacks")
-  )
-    return "bottoms";
-
-  if (
-    s.includes("shirt") ||
-    s.includes("tee") ||
-    s.includes("t-shirt") ||
-    s.includes("polo") ||
-    s.includes("knit") ||
-    s.includes("sweater")
-  )
-    return "tops";
-
-  if (
-    s.includes("jacket") ||
-    s.includes("coat") ||
-    s.includes("bomber") ||
-    s.includes("overcoat") ||
-    s.includes("blazer")
-  )
-    return "outerwear";
-
-  if (
-    s.includes("belt") ||
-    s.includes("watch") ||
-    s.includes("sunglass") ||
-    s.includes("bag") ||
-    s.includes("wallet")
-  )
-    return "accessories";
-
-  return "other";
+  if (/(boot|shoe|loafer|chelsea|ankle|derby)/.test(s)) return "shoes";
+  if (/(trouser|pants|jeans|chino|slack)/.test(s)) return "bottoms";
+  if (/(shirt|tee|t-shirt|polo|knit|sweater)/.test(s)) return "tops";
+  if (/(jacket|coat|bomber|blazer|parka|outerwear)/.test(s)) return "outerwear";
+  if (/(belt|watch|sunglass|bag|wallet|scarf|accessor)/.test(s)) return "accessories";
+  return undefined;
 }
 
-function scoreCandidate(c: Candidate, prompt: string): number {
-  const t = `${c.title} ${c.link}`.toLowerCase();
+function scoreCandidate(prompt: string, query: string, c: Candidate): number {
   const p = prompt.toLowerCase();
+  const t = (c.title || "").toLowerCase();
+  const l = (c.link || "").toLowerCase();
 
-  let score = 0;
+  let s = 0;
 
-  // prompt word overlap (simple but effective)
-  const words = p.split(/\s+/).filter(Boolean);
-  for (const w of words) {
-    if (w.length < 3) continue;
-    if (t.includes(w)) score += 2;
+  // reward matching main prompt terms
+  const tokens = p.split(/\s+/).filter(Boolean).slice(0, 6);
+  for (const tok of tokens) {
+    if (tok.length < 3) continue;
+    if (t.includes(tok)) s += 3;
+    if (l.includes(tok)) s += 2;
   }
 
-  // prefer product-ish URL patterns
-  if (c.link.includes("/product") || c.link.includes("product.jsp") || c.link.includes("/p/"))
-    score += 6;
-  if (c.link.includes("itemId=") || c.link.includes("prod")) score += 4;
+  // reward product-ish signals
+  if (/prod\d+/.test(l) || /itemid=/.test(l) || /\/product\//.test(l) || /\/p\//.test(l)) s += 6;
 
-  // penalize editorials/hubs
-  for (const b of BLOCKED_PATH_SNIPPETS) {
-    if (t.includes(b)) score -= 20;
+  // penalize obvious non-product
+  if (l.includes("/editorial/") || l.includes("/blog") || l.includes("/magazine")) s -= 20;
+
+  // penalize perfume etc
+  for (const bad of NEGATIVE_TERMS) {
+    if (t.includes(bad) || l.includes(bad)) s -= 12;
   }
 
-  // category preference slightly
-  if (c.category !== "other") score += 3;
+  // small reward: query category mention shows intent
+  if (query.toLowerCase().includes("boots") || query.toLowerCase().includes("trousers")) s += 2;
 
-  return score;
+  return s;
 }
 
-function dedupeAndCap(
-  candidates: Candidate[],
-  desired: number,
-  perDomainCap: number
-): Candidate[] {
-  const out: Candidate[] = [];
-  const seen = new Set<string>();
-  const domainCounts: Record<string, number> = {};
+function buildQueries(prompt: string, gender: Gender) {
+  // prompt-driven: we do NOT hardcode “chelsea boots” anymore.
+  // We always create a balanced “outfit board” around the prompt.
+  const base = prompt;
 
-  // diversity goal: force at least one per main category if possible
-  const wantedCategories: ImageResult["category"][] = [
-    "shoes",
-    "bottoms",
-    "tops",
-    "outerwear",
-    "accessories",
+  const q = [
+    `men ${base} leather boots`,
+    `men ${base} ankle boots`,
+    `men ${base} dress boots`,
+    `men ${base} tailored trousers`,
+    `men ${base} straight leg trousers`,
+    `men ${base} button-up shirt`,
+    `men ${base} minimal shirt`,
+    `men ${base} lightweight jacket`,
+    `men ${base} bomber jacket`,
+    `men ${base} leather belt`,
+    `men ${base} minimalist watch`,
+    `men ${base} sunglasses`,
   ];
 
-  const take = (c: Candidate): boolean => {
-    const key = `${c.link}::${c.img}`;
-    if (seen.has(key)) return false;
-    const d = c.host;
-    const count = domainCounts[d] ?? 0;
-    if (count >= perDomainCap) return false;
+  // if women selected, swap the “men …” prefix. keep the rest identical.
+  if (gender === "women") return q.map((x) => x.replace(/^men\s+/, "women "));
+  if (gender === "unisex") return q.map((x) => x.replace(/^men\s+/, ""));
+  return q;
+}
 
-    seen.add(key);
-    domainCounts[d] = count + 1;
-    out.push(c);
-    return true;
-  };
+function addNegatives(query: string) {
+  // DO NOT include "site:" here — we do site rotation separately
+  const neg = NEGATIVE_TERMS.map((t) => `-${t}`).join(" ");
+  return `${query} product ${neg}`;
+}
 
-  // pass 1: fill categories
-  for (const cat of wantedCategories) {
-    if (out.length >= desired) break;
-    const pick = candidates.find((c) => c.category === cat && !seen.has(`${c.link}::${c.img}`));
-    if (pick) take(pick);
+async function fetchCse(query: string, start: number) {
+  const apiKey =
+    process.env.GOOGLE_CSE_API_KEY ||
+    process.env.GOOGLE_CSE_KEY ||
+    process.env.GOOGLE_API_KEY;
+
+  const cx =
+    process.env.GOOGLE_CSE_CX ||
+    process.env.GOOGLE_CX ||
+    process.env.GOOGLE_CX_ID;
+
+  if (!apiKey || !cx) {
+    throw new Error("Missing GOOGLE_CSE_API_KEY/GOOGLE_CSE_KEY or GOOGLE_CSE_CX/GOOGLE_CX");
   }
 
-  // pass 2: fill remaining
-  for (const c of candidates) {
-    if (out.length >= desired) break;
-    take(c);
+  const url =
+    "https://www.googleapis.com/customsearch/v1" +
+    `?key=${encodeURIComponent(apiKey)}` +
+    `&cx=${encodeURIComponent(cx)}` +
+    `&q=${encodeURIComponent(query)}` +
+    `&searchType=image` +
+    `&num=10` +
+    `&start=${start}`;
+
+  const r = await fetch(url);
+  const text = await r.text();
+  if (!r.ok) {
+    const err = new Error(`CSE HTTP ${r.status}: ${text.slice(0, 250)}`);
+    (err as any).status = r.status;
+    throw err;
+  }
+  return JSON.parse(text) as CseResp;
+}
+
+// Site-by-site rotation: this is the key fix.
+async function gatherCandidatesForQuery(
+  prompt: string,
+  gender: Gender,
+  sites: string[],
+  rawQuery: string,
+  maxPagesPerSite: number,
+  debugFetch: any
+): Promise<Candidate[]> {
+  const out: Candidate[] = [];
+
+  for (const site of sites) {
+    if (out.length >= 25) break; // enough pool for this query
+
+    const q = `${addNegatives(rawQuery)} site:${site}`;
+    const cacheKey = `cse:${q}`;
+
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      out.push(...cached);
+      continue;
+    }
+
+    const collected: Candidate[] = [];
+
+    for (let page = 0; page < maxPagesPerSite; page++) {
+      const start = 1 + page * 10;
+      try {
+        const resp = await fetchCse(q, start);
+        const items = resp.items || [];
+        for (const it of items) {
+          const link = it.link || "";
+          const domain = domainOf(link);
+
+          if (!link) continue;
+          if (BLOCKED_DOMAINS.has(domain)) continue;
+
+          const { img, thumb } = pickThumb(it);
+          if (!img) continue;
+
+          // HARD product-only gate
+          if (!isLikelyProductUrl(domain, link, gender)) continue;
+
+          collected.push({
+            link,
+            img,
+            thumb,
+            title: it.title,
+            displayLink: it.displayLink,
+            query: q,
+          });
+        }
+      } catch (e: any) {
+        // don’t nuke everything — just record and continue to next site
+        debugFetch[q] = debugFetch[q] || { pagesTried: 0, itemsSeen: 0, error: "" };
+        debugFetch[q].error = String(e?.message || e);
+        break;
+      }
+    }
+
+    debugFetch[q] = { pagesTried: maxPagesPerSite, itemsSeen: collected.length };
+
+    cacheSet(cacheKey, collected);
+    out.push(...collected);
   }
 
   return out;
 }
 
-// ---------- Google CSE ----------
-async function fetchCse(
-  apiKey: string,
-  cx: string,
-  q: string,
-  startIndex: number
-): Promise<any> {
-  const url =
-    `https://www.googleapis.com/customsearch/v1` +
-    `?key=${encodeURIComponent(apiKey)}` +
-    `&cx=${encodeURIComponent(cx)}` +
-    `&q=${encodeURIComponent(q)}` +
-    `&searchType=image` +
-    `&num=${NUM_PER_PAGE}` +
-    `&start=${startIndex}`;
+function finalize(
+  prompt: string,
+  gender: Gender,
+  desired: number,
+  candidates: Candidate[],
+  queriesBuilt: string[],
+  queriesSent: string[],
+  ms: number,
+  debugFetch: any
+) {
+  const seen = new Set<string>();
+  const domainCount: Record<string, number> = {};
+  const catCount: Record<string, number> = {};
+  const results: ImageResult[] = [];
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    const err = new Error(`CSE ${res.status}: ${txt.slice(0, 200)}`);
-    (err as any).status = res.status;
-    throw err;
-  }
-  return res.json();
-}
+  // score + sort
+  const scored = candidates
+    .map((c) => {
+      const domain = domainOf(c.link);
+      const q = c.query || "";
+      return {
+        c,
+        domain,
+        cat: detectCategory(q) || detectCategory(c.title || "") || "accessories",
+        s: scoreCandidate(prompt, q, c),
+      };
+    })
+    .sort((a, b) => b.s - a.s);
 
-// ---------- Query builder (THIS IS THE BIG FIX) ----------
-function buildCategoryQueries(prompt: string, gender: Gender) {
-  // IMPORTANT:
-  // We do NOT repeat the prompt in every query.
-  // We derive category queries from prompt vibe + minimal constraints.
+  // first pass: try to ensure category diversity
+  const neededCats = new Set<Category>(["shoes", "bottoms", "tops", "outerwear", "accessories"]);
+  const take = (item: typeof scored[number]) => {
+    const c = item.c;
+    const key = `${c.link}::${c.img}`;
+    if (seen.has(key)) return false;
 
-  const g = gender === "women" ? "women" : "men";
+    const d = item.domain || "unknown";
+    if ((domainCount[d] || 0) >= PER_DOMAIN_CAP) return false;
 
-  // Lightweight prompt parsing for color/style
-  const p = prompt.toLowerCase();
-  const isBlack = p.includes("black");
-  const isMinimal = p.includes("minimal");
-  const isDateNight = p.includes("date night") || p.includes("dinner") || p.includes("evening");
+    const cat = item.cat as Category;
+    seen.add(key);
 
-  const color = isBlack ? "black" : "";
-  const vibe = `${isMinimal ? "minimal" : ""} ${isDateNight ? "date night" : ""}`.trim();
+    domainCount[d] = (domainCount[d] || 0) + 1;
+    catCount[cat] = (catCount[cat] || 0) + 1;
 
-  // Category-specific queries. Boots only in footwear set.
-  const footwearQueries = [
-    `${g} ${color} leather boots ${vibe}`.trim(),
-    `${g} ${color} ankle boots ${isMinimal ? "minimal" : ""}`.trim(),
-    `${g} ${color} dress boots ${isDateNight ? "date night" : ""}`.trim(),
-  ].filter(Boolean);
-
-  const pantsQueries = [
-    `${g} ${color} tailored trousers ${isMinimal ? "minimal" : ""}`.trim(),
-    `${g} ${color} straight leg trousers ${vibe}`.trim(),
-    `${g} ${color} dress pants ${isDateNight ? "date night" : ""}`.trim(),
-  ].filter(Boolean);
-
-  const topQueries = [
-    `${g} ${color ? color : ""} button-up shirt ${isMinimal ? "minimal" : ""}`.trim(),
-    `${g} knit polo ${vibe}`.trim(),
-    `${g} ${color ? color : ""} minimal shirt`.trim(),
-  ].filter(Boolean);
-
-  const outerwearQueries = [
-    `${g} ${color} lightweight jacket ${isMinimal ? "minimal" : ""}`.trim(),
-    `${g} ${color} bomber jacket ${vibe}`.trim(),
-  ].filter(Boolean);
-
-  const accessoryQueries = [
-    `${g} ${color} leather belt ${isMinimal ? "minimal" : ""}`.trim(),
-    `${g} minimalist watch ${color}`.trim(),
-    `${g} ${color} sunglasses ${vibe}`.trim(),
-  ].filter(Boolean);
-
-  // Return a blended list (we'll still cap + diversify later)
-  const all = [
-    ...footwearQueries,
-    ...pantsQueries,
-    ...topQueries,
-    ...outerwearQueries,
-    ...accessoryQueries,
-  ];
-
-  return { all, footwearQueries, pantsQueries, topQueries, outerwearQueries, accessoryQueries };
-}
-
-function withNegatives(q: string) {
-  return `${q} ${NEGATIVE_TERMS}`.trim();
-}
-
-function parseSites(raw: unknown): string[] {
-  if (Array.isArray(raw)) {
-    return raw
-      .map((x) => toStr(x).trim())
-      .filter(Boolean)
-      .map((s) => s.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, ""));
-  }
-  if (typeof raw === "string") {
-    return raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => s.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/, ""));
-  }
-  return [];
-}
-
-function isFarfetch(host: string) {
-  return host.includes("farfetch.");
-}
-
-// ---------- API Handler ----------
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const started = Date.now();
-
-  // Accept both GET and POST
-  const prompt =
-    toStr(req.method === "POST" ? (req.body as any)?.prompt : (req.query.prompt as any), "").trim();
-
-  const genderRaw =
-    toStr(req.method === "POST" ? (req.body as any)?.gender : (req.query.gender as any), "men")
-      .trim()
-      .toLowerCase();
-
-  const gender: Gender =
-    genderRaw === "women" ? "women" : genderRaw === "unisex" ? "unisex" : "men";
-
-  const desired =
-    Number(req.method === "POST" ? (req.body as any)?.desired : (req.query.desired as any)) ||
-    DEFAULT_DESIRED;
-
-  // Sites can come from request, but keep it optional.
-  // If empty, we search entire web (but your CSE must allow it).
-  const sitesRaw = req.method === "POST" ? (req.body as any)?.sites : (req.query.sites as any);
-  const sites = parseSites(sitesRaw);
-
-  // ENV: support your naming
-  const apiKey =
-    process.env.GOOGLE_CSE_API_KEY ||
-    process.env.GOOGLE_CSE_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    "";
-
-  const cx = process.env.GOOGLE_CSE_CX || process.env.GOOGLE_CX || "";
-
-  if (!apiKey || !cx) {
-    return res.status(200).json({
-      images: [],
-      source: "google-cse",
-      debug: {
-        version: VERSION,
-        prompt,
-        gender,
-        desired,
-        sites,
-        usedWebFallback: true,
-        farfetchBlocked: FARFETCH_BLOCKED,
-        lastError: { message: "Missing GOOGLE_CSE_API_KEY/GOOGLE_CSE_KEY or GOOGLE_CSE_CX/GOOGLE_CX" },
-      },
+    results.push({
+      imageUrl: c.img,
+      thumbnailUrl: c.thumb,
+      sourceUrl: c.link,
+      title: c.title,
+      provider: d,
+      category: cat,
+      score: item.s,
+      query: c.query,
     });
-  }
 
-  if (!prompt) {
-    // Don’t auto-fill the search bar / don’t hardcode a prompt
-    return res.status(200).json({
-      images: [],
-      source: "google-cse",
-      debug: {
-        version: VERSION,
-        prompt,
-        gender,
-        desired,
-        sites,
-        note: "No prompt provided.",
-      },
-    });
-  }
-
-  const built = buildCategoryQueries(prompt, gender);
-  const rawQueries = built.all;
-
-  // If sites are provided, we do site-by-site, because Google behaves better than (site:a OR site:b)
-  // If sites are empty, we search the whole web.
-  const queriesFinal: { q: string; category: ImageResult["category"]; site?: string }[] = [];
-
-  const addQuery = (q: string, category: ImageResult["category"], site?: string) => {
-    // add negatives and "product" hint
-    // "product" helps a bit, but not required
-    const base = `${q} product`.trim();
-    const final = withNegatives(base);
-    queriesFinal.push({ q: final + (site ? ` site:${site}` : ""), category, site });
+    return true;
   };
 
-  // Build per-category set with category labels
-  const categorySets: { qs: string[]; category: ImageResult["category"] }[] = [
-    { qs: built.footwearQueries, category: "shoes" },
-    { qs: built.pantsQueries, category: "bottoms" },
-    { qs: built.topQueries, category: "tops" },
-    { qs: built.outerwearQueries, category: "outerwear" },
-    { qs: built.accessoryQueries, category: "accessories" },
-  ];
+  // satisfy one per category if possible
+  for (const cat of Array.from(neededCats)) {
+    if (results.length >= desired) break;
+    if ((catCount[cat] || 0) >= PER_CATEGORY_MIN) continue;
 
-  if (sites.length > 0) {
-    // rotate sites across queries for diversity
-    let si = 0;
-    for (const set of categorySets) {
-      for (const q of set.qs) {
-        const site = sites[si % sites.length];
-        si += 1;
-        addQuery(q, set.category, site);
-      }
-    }
-  } else {
-    // whole web
-    for (const set of categorySets) {
-      for (const q of set.qs) addQuery(q, set.category);
-    }
+    const pick = scored.find((x) => x.cat === cat && (domainCount[x.domain] || 0) < PER_DOMAIN_CAP);
+    if (pick) take(pick);
   }
 
-  const debugFetch: Record<
-    string,
-    { pages: number; itemsSeen: number; domains: Record<string, number> }
-  > = {};
-
-  const candidates: Candidate[] = [];
-  let saw429 = false;
-
-  for (const item of queriesFinal) {
-    const key = item.q;
-    debugFetch[key] = { pages: 0, itemsSeen: 0, domains: {} };
-
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const startIndex = 1 + page * NUM_PER_PAGE;
-
-      try {
-        const data = await fetchCse(apiKey, cx, item.q, startIndex);
-        debugFetch[key].pages += 1;
-
-        const items = Array.isArray(data?.items) ? (data.items as any[]) : [];
-        debugFetch[key].itemsSeen += items.length;
-
-        for (const it of items) {
-          const link = toStr(it?.image?.contextLink, toStr(it?.link, ""));
-          const img = toStr(it?.link, "");
-          const title = toStr(it?.title, "");
-          const thumb = toStr(it?.image?.thumbnailLink, "");
-
-          if (!link || !img) continue;
-
-          const host = normalizeHost(link);
-
-          if (FARFETCH_BLOCKED && isFarfetch(host)) continue;
-          if (isBlockedCandidate(title, link)) continue;
-          if (!looksLikeProduct(title, link)) continue;
-
-          debugFetch[key].domains[host] = (debugFetch[key].domains[host] ?? 0) + 1;
-
-          candidates.push({
-            title,
-            link,
-            img,
-            thumb: thumb || undefined,
-            host,
-            query: item.q,
-            category: item.category,
-          });
-        }
-      } catch (e: any) {
-        const status = Number(e?.status || 0);
-        if (status === 429) saw429 = true;
-        // If rate-limited, stop early to avoid burning quota
-        break;
-      }
-    }
+  // fill remainder with best overall
+  for (const item of scored) {
+    if (results.length >= desired) break;
+    take(item);
   }
 
-  // Score + sort
-  const scored = candidates
-    .map((c) => ({
-      ...c,
-      _score: scoreCandidate(c, prompt),
-    }))
-    .sort((a, b) => b._score - a._score);
-
-  // Dedupe + per-domain cap + diversity
-  const final = dedupeAndCap(
-    scored.map(({ _score, ...c }) => c),
-    desired,
-    PER_DOMAIN_CAP
-  );
-
-  // Convert to output
-  const images: ImageResult[] = final.map((c) => ({
-    imageUrl: c.img,
-    thumbnailUrl: c.thumb,
-    sourceUrl: c.link,
-    title: c.title,
-    provider: c.host,
-    category: c.category,
-    score: scoreCandidate(c, prompt),
-    query: c.query,
-  }));
-
-  // Final post-filter safety (catch any stragglers)
-  const cleaned = images.filter((img) => !isBlockedCandidate(img.title, img.sourceUrl));
-
-  const domainCounts: Record<string, number> = {};
-  for (const img of cleaned) {
-    domainCounts[img.provider] = (domainCounts[img.provider] ?? 0) + 1;
-  }
-
-  const categoryCounts: Record<string, number> = {};
-  for (const img of cleaned) {
-    categoryCounts[img.category] = (categoryCounts[img.category] ?? 0) + 1;
-  }
-
-  return res.status(200).json({
-    images: cleaned,
+  return {
+    images: results,
     source: "google-cse",
     debug: {
       version: VERSION,
@@ -569,17 +458,89 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       gender,
       desired,
       perDomainCap: PER_DOMAIN_CAP,
-      sites,
-      queriesBuilt: rawQueries,
-      queriesSent: queriesFinal.map((q) => q.q),
+      sitesUsed: DEFAULT_SITES,
+      queriesBuilt,
+      queriesSent,
       totalCandidates: candidates.length,
-      totalDeduped: cleaned.length,
-      domainCounts,
-      categoryCounts,
-      saw429,
-      farfetchBlocked: FARFETCH_BLOCKED,
+      totalDeduped: results.length,
+      domainCounts: domainCount,
+      categoryCounts: catCount,
+      farfetchBlocked: true,
       fetch: debugFetch,
-      ms: Date.now() - started,
+      ms,
     },
-  });
+  };
+}
+
+// ---------- handler ----------
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const t0 = Date.now();
+
+  try {
+    const prompt = normalizePrompt(req.query.prompt);
+    const gender = (normalizePrompt(req.query.gender) as Gender) || "men";
+    const desired = Math.max(6, Math.min(30, Number(req.query.desired || DEFAULT_DESIRED)));
+
+    if (!prompt) {
+      return res.status(200).json({
+        images: [],
+        source: "google-cse",
+        debug: {
+          version: VERSION,
+          error: "Missing prompt",
+        },
+      });
+    }
+
+    const sites = DEFAULT_SITES;
+
+    const queriesBuilt = buildQueries(prompt, gender);
+    const queriesSent: string[] = [];
+    const debugFetch: any = {};
+
+    // gather candidates with strict site rotation
+    let candidates: Candidate[] = [];
+
+    // keep it fast: fewer pages per site, more sites = better diversity
+    const MAX_PAGES_PER_SITE = 1;
+
+    for (const raw of queriesBuilt) {
+      if (candidates.length >= 220) break; // cap work
+      // record “sent” without site: (cleaner debug)
+      queriesSent.push(addNegatives(raw));
+
+      const got = await gatherCandidatesForQuery(
+        prompt,
+        gender,
+        sites,
+        raw,
+        MAX_PAGES_PER_SITE,
+        debugFetch
+      );
+      candidates = candidates.concat(got);
+    }
+
+    const out = finalize(
+      prompt,
+      gender,
+      desired,
+      candidates,
+      queriesBuilt,
+      queriesSent,
+      Date.now() - t0,
+      debugFetch
+    );
+
+    res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
+    return res.status(200).json(out);
+  } catch (e: any) {
+    return res.status(200).json({
+      images: [],
+      source: "google-cse",
+      debug: {
+        version: VERSION,
+        error: String(e?.message || e),
+      },
+    });
+  }
 }
