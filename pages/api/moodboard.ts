@@ -174,14 +174,24 @@ function cacheSet(key: string, data: any) {
 }
 
 // ---------- helpers ----------
-function pickImageLinks(item: CseItem): { imageUrl?: string; thumbUrl?: string; pageUrl?: string } {
-  const imageUrl = item?.link; // actual image
-  const thumbUrl = item?.image?.thumbnailLink;
-  const pageUrl = item?.image?.contextLink; // product page
+function pickImageLinks(it: any): { imageUrl?: string; thumbUrl?: string; pageUrl?: string } {
+  const pageUrl = it?.link || "";
+
+  const pm = it?.pagemap;
+  const cseImg = pm?.cse_image?.[0]?.src;
+  const cseThumb = pm?.cse_thumbnail?.[0]?.src;
+
+  // fallback: some results only have "image" object
+  const fallbackImg = it?.image?.thumbnailLink || it?.image?.contextLink;
+  const fallbackThumb = it?.image?.thumbnailLink;
+
+  const imageUrl = cseImg || fallbackImg || "";
+  const thumbUrl = cseThumb || fallbackThumb || "";
+
   return { imageUrl, thumbUrl, pageUrl };
 }
  {
-  const pm = item?.pagemap;
+  const pm = it?.pagemap;
   const cseImg = pm?.cse_image?.[0]?.src;
   const cseThumb = pm?.cse_thumbnail?.[0]?.src;
 
@@ -345,7 +355,6 @@ async function gatherCandidatesForQuery(
         const resp = await fetchCse(q, start);
         const items = resp.items || [];
         for (const it of items) {
-          for (const it of items) {
   const pageUrl = (it.link || "").trim();
   if (!pageUrl) continue;
 
