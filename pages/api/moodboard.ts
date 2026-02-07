@@ -23,16 +23,18 @@ type Candidate = {
   query?: string;
 };
 
-type CseItem = {
-  link?: string;
-  title?: string;
-  displayLink?: string;
-  pagemap?: any;
+type CseImage = {
+  contextLink?: string;
+  thumbnailLink?: string;
 };
 
-type CseResp = {
-  items?: CseItem[];
+type CseItem = {
+  link?: string; // image URL (because searchType=image)
+  title?: string;
+  displayLink?: string;
+  image?: CseImage; // contains contextLink + thumbnailLink
 };
+
 
 const VERSION = "moodboard-v23-SITE-ROTATION-PRODUCT-ONLY-2026-02-04";
 
@@ -172,7 +174,13 @@ function cacheSet(key: string, data: any) {
 }
 
 // ---------- helpers ----------
-function pickThumb(item: CseItem): { img?: string; thumb?: string } {
+function pickImageLinks(item: CseItem): { imageUrl?: string; thumbUrl?: string; pageUrl?: string } {
+  const imageUrl = item?.link; // actual image
+  const thumbUrl = item?.image?.thumbnailLink;
+  const pageUrl = item?.image?.contextLink; // product page
+  return { imageUrl, thumbUrl, pageUrl };
+}
+ {
   const pm = item?.pagemap;
   const cseImg = pm?.cse_image?.[0]?.src;
   const cseThumb = pm?.cse_thumbnail?.[0]?.src;
@@ -337,26 +345,32 @@ async function gatherCandidatesForQuery(
         const resp = await fetchCse(q, start);
         const items = resp.items || [];
         for (const it of items) {
-          const link = it.link || "";
-          const domain = domainOf(link);
+          for (const it of items) {
+  const pageUrl = (it.link || "").trim();
+  if (!pageUrl) continue;
 
-          if (!link) continue;
-          if (BLOCKED_DOMAINS.has(domain)) continue;
+  const domain = domainOf(pageUrl);
+  if (!domain) continue;
+  if (BLOCKED_DOMAINS.has(domain)) continue;
 
-          const { img, thumb } = pickThumb(it);
-          if (!img) continue;
+  const { imageUrl, thumbUrl, pageUrl: normalizedPageUrl } = pickImageLinks(it);
 
-          // HARD product-only gate
-          if (!isLikelyProductUrl(domain, link, gender)) continue;
+  const finalPageUrl = (normalizedPageUrl || pageUrl).trim();
+  if (!finalPageUrl || !imageUrl) continue;
 
-          collected.push({
-            link,
-            img,
-            thumb,
-            title: it.title,
-            displayLink: it.displayLink,
-            query: q,
-          });
+  // run product-only rules on PRODUCT PAGE URL (not the image CDN)
+  if (!isLikelyProductUrl(domainOf(finalPageUrl), finalPageUrl, gender)) continue;
+
+  collected.push({
+    link: finalPageUrl,
+    img: imageUrl,
+    thumb: thumbUrl || "",
+    title: it.title || "",
+    displayLink: it.displayLink || domain,
+    query: q,
+  });
+}
+
         }
       } catch (e: any) {
         // don’t nuke everything — just record and continue to next site
