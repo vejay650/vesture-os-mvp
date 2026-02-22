@@ -187,8 +187,8 @@ export default function Results() {
                 style={{ display: "block" }}
               >
                 <img
-                  src={url}
-                  alt={`moodboard ${i + 1}`}
+                  src={img.thumbnailUrl || img.imageUrl}
+                  alt={img.title || `moodboard ${i + 1}`}
                   loading="lazy"
                   style={{
                     width: "100%",
