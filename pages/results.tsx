@@ -178,10 +178,10 @@ export default function Results() {
               gap: 16,
             }}
           >
-            {imageUrls.map((url, i) => (
+            {images.map((img, i) => (
               <a
-                key={`${url}-${i}`}
-                href={refs[i] || url}
+ key={`${img.sourceUrl || img.imageUrl}-${i}`}
+href={img.sourceUrl || img.imageUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ display: "block" }}
