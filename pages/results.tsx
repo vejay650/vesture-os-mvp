@@ -17,7 +17,14 @@ export default function Results() {
   const [gender, setGender] = useState("");
 
   // Results
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  type MoodboardImage = {
+  imageUrl: string;
+  thumbnailUrl?: string;
+  sourceUrl?: string;
+  title?: string;
+  provider?: string;
+};
+const [images, setImages] = useState<MoodboardImage[]>([]);
   const [refs, setRefs] = useState<string[]>([]);           // NEW: click-through URLs
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
