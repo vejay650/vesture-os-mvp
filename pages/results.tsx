@@ -65,11 +65,11 @@ export default function Results() {
     const hasStructured = !!(e || mo || st || g);
 
     const payload: any =
-      _q.trim()
-        ? { q: _q.trim(), count: 18 }
-        : hasStructured
-        ? { event: e, mood: mo, style: st, gender: g, count: 18 }
-        : null;
+  _q.trim()
+    ? { prompt: _q.trim(), q: _q.trim(), gender: g || "men", count: 18 }
+    : hasStructured
+    ? { event: e, mood: mo, style: st, gender: g, count: 18 }
+    : null;
 
     if (!payload) {
       setImages([]);
