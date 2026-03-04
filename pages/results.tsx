@@ -3,6 +3,14 @@ import { useEffect, useState } from "react";
 
 type Mode = "outfits" | "moodboard";
 
+type MoodboardImage = {
+  imageUrl: string;
+  thumbnailUrl?: string;
+  sourceUrl?: string;
+  title?: string;
+  provider?: string;
+};
+
 export default function Results() {
   const router = useRouter();
 
@@ -17,15 +25,7 @@ export default function Results() {
   const [gender, setGender] = useState("");
 
   // Results
-  type MoodboardImage = {
-  imageUrl: string;
-  thumbnailUrl?: string;
-  sourceUrl?: string;
-  title?: string;
-  provider?: string;
-};
-const [images, setImages] = useState<MoodboardImage[]>([]);
-  const [refs, setRefs] = useState<string[]>([]);           // NEW: click-through URLs
+  const [images, setImages] = useState<MoodboardImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -34,11 +34,14 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
     e.preventDefault();
     const params = new URLSearchParams();
     params.set("mode", "moodboard");
-    if (q.trim()) params.set("q", q.trim());
+    const qTrim = q.trim();
+    if (qTrim) params.set("q", qTrim);
     router.replace(`/results?${params.toString()}`);
   };
 
   useEffect(() => {
+    if (!router.isReady) return;
+
     const p = new URLSearchParams(window.location.search);
     const m = (p.get("mode") as Mode) || "moodboard";
     setMode(m);
@@ -56,9 +59,11 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
     setStyle(st);
     setGender(g);
 
+    // only moodboard uses /api/moodboard
     if (m !== "moodboard") return;
 
     const hasStructured = !!(e || mo || st || g);
+
     const payload: any =
       _q.trim()
         ? { q: _q.trim(), count: 18 }
@@ -67,16 +72,14 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
         : null;
 
     if (!payload) {
-      setImageUrls([]);
-      setRefs([]);
-      setError("Provide q or one of: event, mood, style");
+      setImages([]);
+      setError("Provide q or one of: event, mood, style, gender");
       return;
     }
 
     setLoading(true);
     setError("");
-    setImageUrls([]);
-    setRefs([]);
+    setImages([]);
 
     fetch("/api/moodboard", {
       method: "POST",
@@ -87,34 +90,37 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
       .then((data) => {
         if (data?.error) {
           setError(String(data.error));
-          setImageUrls([]);
-          setRefs([]);
+          setImages([]);
           return;
         }
 
-        // Expect: data.images = [{ imageUrl, sourceUrl, title, provider }]
-        const raw: { imageUrl?: string; sourceUrl?: string }[] = data?.images || [];
+        // Expect: data.images = [{ imageUrl, thumbnailUrl?, sourceUrl?, title?, provider? }]
+        const raw: MoodboardImage[] = Array.isArray(data?.images) ? data.images : [];
 
-        // client-side dedupe by image URL
+        // client-side dedupe by imageUrl
         const seen = new Set<string>();
-        const urls: string[] = [];
-        const hrefs: string[] = [];
+        const deduped: MoodboardImage[] = [];
 
         for (const it of raw) {
-          const u = it?.imageUrl;
+          const u = (it?.imageUrl || "").trim();
           if (!u) continue;
           if (seen.has(u)) continue;
           seen.add(u);
-          urls.push(u);
-          hrefs.push(it?.sourceUrl || u);
+
+          deduped.push({
+            imageUrl: u,
+            thumbnailUrl: it.thumbnailUrl,
+            sourceUrl: it.sourceUrl,
+            title: it.title,
+            provider: it.provider,
+          });
         }
 
-        setImageUrls(urls);
-        setRefs(hrefs);
+        setImages(deduped);
       })
       .catch(() => setError("Failed to reach server."))
       .finally(() => setLoading(false));
-  }, [router.asPath]);
+  }, [router.isReady, router.asPath]);
 
   return (
     <main
@@ -135,7 +141,7 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
           type="text"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder='Try: "oversized japanese streetwear"'
+          placeholder='Try: "black minimal date night boots"'
           style={{
             flex: 1,
             padding: "12px 16px",
@@ -168,15 +174,18 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
       {/* Moodboard */}
       <section style={{ marginTop: "1.25rem" }}>
         <h3>Outfit Moodboard</h3>
+
         {loading && <p>Loading…</p>}
+
         {!loading && error && (
           <p style={{ color: "crimson", marginTop: 8 }}>{error}</p>
         )}
-        {!loading && !error && imageUrls.length === 0 && (
+
+        {!loading && !error && images.length === 0 && (
           <p style={{ marginTop: 8 }}>No images yet.</p>
         )}
 
-        {imageUrls.length > 0 && (
+        {images.length > 0 && (
           <div
             style={{
               marginTop: 12,
@@ -187,11 +196,12 @@ const [images, setImages] = useState<MoodboardImage[]>([]);
           >
             {images.map((img, i) => (
               <a
- key={`${img.sourceUrl || img.imageUrl}-${i}`}
-href={img.sourceUrl || img.imageUrl}
+                key={`${img.sourceUrl || img.imageUrl}-${i}`}
+                href={img.sourceUrl || img.imageUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ display: "block" }}
+                title={img.title || img.provider || ""}
               >
                 <img
                   src={img.thumbnailUrl || img.imageUrl}
