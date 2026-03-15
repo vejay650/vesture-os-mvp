@@ -9,12 +9,12 @@ type MoodboardImage = {
   sourceUrl?: string;
   title?: string;
   provider?: string;
+  category?: string;
 };
 
 export default function Results() {
   const router = useRouter();
 
-  // Search UI
   const [q, setQ] = useState("");
   const [mode, setMode] = useState<Mode>("moodboard");
 
@@ -24,18 +24,16 @@ export default function Results() {
   const [style, setStyle] = useState("");
   const [gender, setGender] = useState("");
 
-  // Results
   const [images, setImages] = useState<MoodboardImage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Search submit (text bar)
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const params = new URLSearchParams();
     params.set("mode", "moodboard");
-    const qTrim = q.trim();
-    if (qTrim) params.set("q", qTrim);
+    const qt = q.trim();
+    if (qt) params.set("q", qt);
     router.replace(`/results?${params.toString()}`);
   };
 
@@ -46,7 +44,6 @@ export default function Results() {
     const m = (p.get("mode") as Mode) || "moodboard";
     setMode(m);
 
-    // read both the new free-text q and legacy structured params
     const _q = p.get("q") || "";
     const e = p.get("event") || "";
     const mo = p.get("mood") || "";
@@ -59,21 +56,20 @@ export default function Results() {
     setStyle(st);
     setGender(g);
 
-    // only moodboard uses /api/moodboard
     if (m !== "moodboard") return;
 
     const hasStructured = !!(e || mo || st || g);
 
     const payload: any =
-  _q.trim()
-    ? { prompt: _q.trim(), q: _q.trim(), gender: g || "men", count: 18 }
-    : hasStructured
-    ? { event: e, mood: mo, style: st, gender: g, count: 18 }
-    : null;
+      _q.trim()
+        ? { prompt: _q.trim(), q: _q.trim(), gender: g || "men", count: 18 }
+        : hasStructured
+        ? { event: e, mood: mo, style: st, gender: g || "men", count: 18 }
+        : null;
 
     if (!payload) {
       setImages([]);
-      setError("Provide q or one of: event, mood, style, gender");
+      setError("Type something in the search bar.");
       return;
     }
 
@@ -94,31 +90,25 @@ export default function Results() {
           return;
         }
 
-        // Expect: data.images = [{ imageUrl, thumbnailUrl?, sourceUrl?, title?, provider? }]
         const raw: MoodboardImage[] = Array.isArray(data?.images) ? data.images : [];
 
-        // client-side dedupe by imageUrl
+        // dedupe by imageUrl
         const seen = new Set<string>();
         const deduped: MoodboardImage[] = [];
-
         for (const it of raw) {
           const u = (it?.imageUrl || "").trim();
           if (!u) continue;
           if (seen.has(u)) continue;
           seen.add(u);
-
-          deduped.push({
-            imageUrl: u,
-            thumbnailUrl: it.thumbnailUrl,
-            sourceUrl: it.sourceUrl,
-            title: it.title,
-            provider: it.provider,
-          });
+          deduped.push(it);
         }
 
         setImages(deduped);
       })
-      .catch(() => setError("Failed to reach server."))
+      .catch(() => {
+        setError("Failed to reach server.");
+        setImages([]);
+      })
       .finally(() => setLoading(false));
   }, [router.isReady, router.asPath]);
 
@@ -135,7 +125,6 @@ export default function Results() {
         Get Styled <span style={{ fontSize: "1.2rem" }}>✨</span>
       </h1>
 
-      {/* One search bar */}
       <form onSubmit={handleSearch} style={{ display: "flex", gap: 12 }}>
         <input
           type="text"
@@ -166,24 +155,12 @@ export default function Results() {
         </button>
       </form>
 
-      <p style={{ marginTop: 8, color: "#666" }}>
-        Tip: keep it short — e.g. <em>“dinner minimal unisex”</em> or{" "}
-        <em>“black denim workwear”</em>
-      </p>
-
-      {/* Moodboard */}
       <section style={{ marginTop: "1.25rem" }}>
         <h3>Outfit Moodboard</h3>
 
         {loading && <p>Loading…</p>}
-
-        {!loading && error && (
-          <p style={{ color: "crimson", marginTop: 8 }}>{error}</p>
-        )}
-
-        {!loading && !error && images.length === 0 && (
-          <p style={{ marginTop: 8 }}>No images yet.</p>
-        )}
+        {!loading && error && <p style={{ color: "crimson" }}>{error}</p>}
+        {!loading && !error && images.length === 0 && <p>No images yet.</p>}
 
         {images.length > 0 && (
           <div
@@ -216,6 +193,9 @@ export default function Results() {
                     display: "block",
                   }}
                 />
+                <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
+                  {img.provider || ""}
+                </div>
               </a>
             ))}
           </div>
