@@ -228,15 +228,34 @@ function dedupe<T>(arr: T[], keyFn: (t: T) => string) {
 }
 
 // Main
+function inferGenderFromPrompt(prompt: string): "men" | "women" | "unisex" {
+  const p = (prompt || "").toLowerCase();
+
+  // strong women signals
+  if (
+    /\b(women|woman|womens|female|girls|girl|ladies|lady|she|her)\b/.test(p) ||
+    /\b(dress|heels|skirt|blouse|bra|lingerie|handbag|purse)\b/.test(p)
+  ) return "women";
+
+  // strong men signals
+  if (
+    /\b(men|man|mens|male|boys|boy|he|him)\b/.test(p) ||
+    /\b(suit|tie|tux|briefcase)\b/.test(p)
+  ) return "men";
+
+  return "unisex";
+}
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
-    const prompt = String((req.query.prompt || (req.body as any)?.prompt || "") as string).trim();
-    const genderRaw = String((req.query.gender || (req.body as any)?.gender || "men") as string).toLowerCase();
-    const gender = (["men", "women", "unisex"].includes(genderRaw) ? genderRaw : "men") as
-      | "men"
-      | "women"
-      | "unisex";
+   const prompt = String((req.query.prompt || (req.body as any)?.prompt || "") as string).trim();
 
+const genderRaw = String((req.query.gender || (req.body as any)?.gender || "") as string).trim().toLowerCase();
+const inferred = inferGenderFromPrompt(prompt);
+
+const gender = (["men", "women", "unisex"].includes(genderRaw) ? genderRaw : inferred) as
+  | "men"
+  | "women"
+  | "unisex";
     const desired = Math.min(Math.max(Number(req.query.desired || (req.body as any)?.desired || DEFAULT_DESIRED), 6), 30);
     const perDomainCap = Math.min(Math.max(Number(req.query.perDomainCap || (req.body as any)?.perDomainCap || DEFAULT_PER_DOMAIN_CAP), 1), 10);
 
