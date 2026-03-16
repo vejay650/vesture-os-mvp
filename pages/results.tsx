@@ -60,12 +60,19 @@ export default function Results() {
 
     const hasStructured = !!(e || mo || st || g);
 
-    const payload: any =
-      _q.trim()
-        ? { prompt: _q.trim(), q: _q.trim(), gender: g || "men", count: 18 }
-        : hasStructured
-        ? { event: e, mood: mo, style: st, gender: g || "men", count: 18 }
-        : null;
+    const qTrim = _q.trim();
+
+const inferredGender =
+  /\bwomen\b|\bwomens\b|\bfemale\b|\bgirl(s)?\b/i.test(qTrim) ? "women" :
+  /\bmen\b|\bmens\b|\bmale\b|\bboy(s)?\b/i.test(qTrim) ? "men" :
+  "unisex";
+
+const payload: any =
+  qTrim
+    ? { prompt: qTrim, q: qTrim, gender: g || inferredGender, count: 18 }
+    : hasStructured
+    ? { event: e, mood: mo, style: st, gender: g || inferredGender, count: 18 }
+    : null;
 
     if (!payload) {
       setImages([]);
